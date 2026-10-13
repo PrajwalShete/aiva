@@ -62,8 +62,56 @@ fn modified(dir: &Path) -> SystemTime {
         .unwrap_or(SystemTime::UNIX_EPOCH)
 }
 
+/// iCloud "optimized storage" placeholders: reading them would start a download.
+#[cfg(target_os = "macos")]
+fn dataless(meta: &std::fs::Metadata) -> bool {
+    use std::os::macos::fs::MetadataExt;
+    meta.st_flags() & 0x4000_0000 != 0 // SF_DATALESS
+}
+#[cfg(not(target_os = "macos"))]
+fn dataless(_: &std::fs::Metadata) -> bool {
+    false
+}
+
+/// Live progress for the picker: how many projects so far, and the folder being looked at.
+pub struct Progress {
+    pub found: std::sync::atomic::AtomicUsize,
+    pub current: std::sync::Mutex<PathBuf>,
+    pub results: std::sync::Mutex<Vec<Project>>,
+}
+
+/// Searches in a background thread and returns whatever was found within `wait`, so a slow
+/// disk, iCloud or a permission prompt can never hold up setup. `tick` runs ~10×/s meanwhile.
+pub fn projects_within(limit: usize, wait: Duration, mut tick: impl FnMut(usize, &Path)) -> Vec<Project> {
+    use std::sync::Arc;
+    use std::sync::atomic::Ordering;
+    let progress = Arc::new(Progress {
+        found: Default::default(),
+        current: std::sync::Mutex::new(PathBuf::new()),
+        results: std::sync::Mutex::new(Vec::new()),
+    });
+    let worker = {
+        let progress = progress.clone();
+        std::thread::spawn(move || {
+            let found = projects_with(limit, &progress);
+            *progress.results.lock().unwrap() = found;
+        })
+    };
+    let started = Instant::now();
+    while !worker.is_finished() && started.elapsed() < wait {
+        let current = progress.current.lock().unwrap().clone();
+        tick(progress.found.load(Ordering::Relaxed), &current);
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    if worker.is_finished() {
+        let _ = worker.join();
+        return std::mem::take(&mut *progress.results.lock().unwrap());
+    }
+    Vec::new() // timed out; the picker still offers "+ Add a folder by path…"
+}
+
 /// Project folders, most recently touched first (at most `limit`).
-pub fn projects(limit: usize) -> Vec<Project> {
+fn projects_with(limit: usize, progress: &Progress) -> Vec<Project> {
     let home = dirs::home_dir().unwrap_or_default();
     let mut roots: Vec<(PathBuf, usize)> = Vec::new();
     if let Ok(cwd) = std::env::current_dir() {
@@ -93,6 +141,7 @@ pub fn projects(limit: usize) -> Vec<Project> {
                 break;
             }
             let Ok(canonical) = std::fs::canonicalize(&dir) else { continue };
+            *progress.current.lock().unwrap() = canonical.clone();
             if !seen.insert(canonical.clone()) {
                 continue;
             }
@@ -100,6 +149,7 @@ pub fn projects(limit: usize) -> Vec<Project> {
                 if let Some(kind) = kind_of(&canonical) {
                     let name = canonical.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     found.push(Project { modified: modified(&canonical), path: canonical, name, kind });
+                    progress.found.store(found.len(), std::sync::atomic::Ordering::Relaxed);
                     continue; // don't list folders inside a project
                 }
             }
@@ -112,7 +162,7 @@ pub fn projects(limit: usize) -> Vec<Project> {
                 if name.starts_with('.') || SKIP.contains(&name.as_str()) {
                     continue;
                 }
-                if e.file_type().is_ok_and(|t| t.is_dir()) {
+                if e.file_type().is_ok_and(|t| t.is_dir()) && !e.metadata().is_ok_and(|m| dataless(&m)) {
                     stack.push((e.path(), depth + 1));
                 }
             }

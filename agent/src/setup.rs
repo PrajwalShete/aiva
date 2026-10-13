@@ -88,14 +88,27 @@ pub fn run(args: SetupArgs) -> Result<()> {
     Ok(())
 }
 
+/// `AIVA_TRACE=1 aiva setup` prints how long each step takes, to diagnose slow machines.
+fn trace(msg: &str) {
+    if std::env::var_os("AIVA_TRACE").is_some() {
+        eprintln!("  {}", dim(format!("[trace] {msg}")));
+    }
+}
+
 // ---- Step 1: folder picker --------------------------------------------------------------
 
 fn pick_folders(cfg: &mut Config) -> Result<()> {
     ui::info(dim("Your AI can read only these folders, and never secret files like .env or keys."));
     ui::blank();
     let pb = ui::spinner("Looking for your projects…");
-    let found = discover::projects(30);
+    let started = Instant::now();
+    let found = discover::projects_within(30, Duration::from_secs(4), |n, at| {
+        let place = if at.as_os_str().is_empty() { String::new() } else { format!(" · {}", ui::tilde(at)) };
+        let place: String = place.chars().take(60).collect();
+        pb.set_message(format!("Looking for your projects… {} {}", bold(n), dim(format!("found{place}"))));
+    });
     pb.finish_and_clear();
+    trace(&format!("project search: {} found in {} ms", found.len(), started.elapsed().as_millis()));
 
     // Already-shared folders first (checked), then discovered projects, newest first.
     struct Row {
