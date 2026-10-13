@@ -56,6 +56,11 @@ export class AgentHub extends DurableObject<Env> {
         ws.close(CLOSE_BAD_HELLO, "Unsupported protocol");
         return;
       }
+      // A probe (`aiva setup` checking the key) gets a welcome but never replaces or serves.
+      if (msg.probe === true) {
+        ws.send(JSON.stringify({ type: "welcome", id: meta.id, url: `${meta.origin}/${meta.id}/mcp` }));
+        return;
+      }
       // One computer per key: the newest connection wins.
       for (const other of this.ctx.getWebSockets("agent")) {
         if (other !== ws) other.close(CLOSE_REPLACED, "Another computer connected with this key");
@@ -168,10 +173,10 @@ export class AgentHub extends DurableObject<Env> {
     return { result: Array.isArray(r?.content) ? r : errorResult("The computer sent a malformed result."), timing };
   }
 
-  /** The tools the connected computer offers, or [] when it's offline. */
-  async tools(): Promise<unknown[]> {
+  /** The tools the connected computer offers, or null when it's offline. */
+  async tools(): Promise<unknown[] | null> {
     const result = (await this.request({ type: "list" }, 10_000, null)) as { tools?: unknown[] } | null;
-    return Array.isArray(result?.tools) ? result.tools : [];
+    return Array.isArray(result?.tools) ? result.tools : null;
   }
 
   async status(): Promise<{ online: boolean; device: string | null; version: string | null }> {

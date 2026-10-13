@@ -26,7 +26,16 @@ pub enum RelayMessage {
 #[derive(Debug, Serialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum AgentMessage {
-    Hello { protocol: u32, version: &'static str, device: String, os: &'static str },
+    /// `probe`: only checking the key (`aiva setup`); the relay must not let it replace the
+    /// running agent.
+    Hello {
+        protocol: u32,
+        version: &'static str,
+        device: String,
+        os: &'static str,
+        #[serde(skip_serializing_if = "std::ops::Not::not")]
+        probe: bool,
+    },
     /// `timing`: microseconds spent in the tool and in the agent overall (receipt → send).
     Result { id: u64, result: Value, #[serde(skip_serializing_if = "Option::is_none")] timing: Option<Value> },
     Ping,

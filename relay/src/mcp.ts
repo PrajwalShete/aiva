@@ -94,7 +94,7 @@ async function handleRequest(msg: RpcRequest, name: string, hub: DurableObjectSt
   switch (msg.method) {
     case "initialize": {
       const requested = msg.params?.protocolVersion as string | undefined;
-      const tools = (await hub.tools()) as ToolInfo[];
+      const tools = ((await hub.tools()) ?? []) as ToolInfo[];
       const canEdit = tools.some((t) => t.annotations?.readOnlyHint === false);
       return ok({
         protocolVersion: requested && SUPPORTED_VERSIONS.includes(requested) ? requested : SUPPORTED_VERSIONS[0],
@@ -105,8 +105,13 @@ async function handleRequest(msg: RpcRequest, name: string, hub: DurableObjectSt
     }
     case "ping":
       return ok({});
-    case "tools/list":
-      return ok({ tools: await hub.tools() });
+    case "tools/list": {
+      // An error, not an empty list: apps remember an empty list and would show no tools even
+      // after the computer comes back.
+      const tools = await hub.tools();
+      if (tools) return ok({ tools });
+      return fail(-32000, "The user's computer isn't connected to aiva right now. Run `aiva status` on it, then reconnect.");
+    }
     case "tools/call": {
       const tool = msg.params?.name;
       if (typeof tool !== "string") return fail(-32602, "params.name is required");

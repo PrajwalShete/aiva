@@ -20,9 +20,10 @@ const CLOSE_INVALID_SECRET: u16 = 4003;
 enum End {
     /// Connection dropped; reconnect with backoff.
     Dropped(String),
-    /// The relay refused this key (or another computer connected with the same key).
-    /// Wait until the config has a different key before trying again.
+    /// The relay refused this key. Wait until the config has a different key before trying again.
     Refused(String),
+    /// Another connection with the same key took over. Step aside, but come back if it goes away.
+    Replaced,
 }
 
 pub async fn run() -> Result<()> {
@@ -63,6 +64,10 @@ pub async fn run() -> Result<()> {
                 refused_key = cfg.key.clone();
                 continue;
             }
+            End::Replaced => {
+                log("Another computer connected with the same key, so this one stepped aside. It takes over again if that one goes away.");
+                wait_while_replaced(&cfg).await;
+            }
             End::Dropped(why) => {
                 if started.elapsed() > Duration::from_secs(60) {
                     backoff = Duration::from_secs(1);
@@ -71,6 +76,26 @@ pub async fn run() -> Result<()> {
                 tokio::time::sleep(backoff + jitter()).await;
                 backoff = (backoff * 2).min(Duration::from_secs(30));
             }
+        }
+    }
+}
+
+/// Waits while another connection holds this key: until the relay sees nobody online (that one
+/// was a short check or has quit) or the key changes.
+async fn wait_while_replaced(cfg: &Config) {
+    loop {
+        tokio::time::sleep(Duration::from_secs(20) + jitter()).await;
+        if Config::load().ok().flatten().and_then(|c| c.key) != cfg.key {
+            return;
+        }
+        let check = cfg.clone();
+        let online = tokio::task::spawn_blocking(move || crate::commands::server_status(&check).ok().and_then(|s| s["online"].as_bool()))
+            .await
+            .ok()
+            .flatten();
+        if online == Some(false) {
+            log("Nobody else is using this key now. Reconnecting.");
+            return;
         }
     }
 }
@@ -103,6 +128,7 @@ pub fn hello() -> AgentMessage {
         version: crate::VERSION,
         device: device_name(),
         os: std::env::consts::OS,
+        probe: false,
     }
 }
 
@@ -112,9 +138,14 @@ pub async fn verify(cfg: &Config) -> std::result::Result<String, String> {
     let ws = connect(cfg).await.map_err(|end| match end {
         End::Dropped(why) => format!("Couldn't reach {}: {why}", cfg.server),
         End::Refused(why) => why,
+        End::Replaced => "Another computer took over this key.".into(),
     })?;
     let (mut sink, mut stream) = ws.split();
-    sink.send(Message::Text(serde_json::to_string(&hello()).unwrap().into())).await.map_err(|e| e.to_string())?;
+    let mut probe = hello();
+    if let AgentMessage::Hello { probe: p, .. } = &mut probe {
+        *p = true;
+    }
+    sink.send(Message::Text(serde_json::to_string(&probe).unwrap().into())).await.map_err(|e| e.to_string())?;
     let wait = async {
         while let Some(msg) = stream.next().await {
             match msg {
@@ -204,7 +235,7 @@ async fn session(cfg: &Config) -> End {
                     Some(Ok(Message::Close(frame))) => {
                         let (code, reason) = frame.map(|f| (u16::from(f.code), f.reason.to_string())).unwrap_or((1005, String::new()));
                         return match code {
-                            CLOSE_REPLACED => End::Refused("Another computer connected with the same key, so this one stepped aside.".into()),
+                            CLOSE_REPLACED => End::Replaced,
                             CLOSE_INVALID_SECRET => End::Refused(format!("The server rejected this key ({reason}).")),
                             _ => End::Dropped(format!("closed by server ({code} {reason})")),
                         };

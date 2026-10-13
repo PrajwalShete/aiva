@@ -10,7 +10,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 
 /// The server reports whether it sees this computer, to whoever holds its key.
-fn server_status(cfg: &Config) -> Result<serde_json::Value> {
+pub fn server_status(cfg: &Config) -> Result<serde_json::Value> {
     let url = format!("{}/api/status", cfg.server.trim_end_matches('/'));
     let mut req = http().get(&url);
     if let Some(key) = &cfg.key {
