@@ -9,6 +9,9 @@ use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 use tokio_tungstenite::tungstenite::{Message, client::IntoClientRequest, http::StatusCode};
 
+/// Logged when an app asks for the tool list; `aiva setup` watches for it.
+pub const APP_CONNECTED: &str = "An app connected and listed the tools";
+
 const PING_EVERY: Duration = Duration::from_secs(30);
 const DEAD_AFTER: Duration = Duration::from_secs(80);
 const CLOSE_REPLACED: u16 = 4001;
@@ -187,6 +190,7 @@ async fn session(cfg: &Config) -> End {
                     Some(Ok(Message::Text(text))) => { let received = Instant::now(); match serde_json::from_str::<RelayMessage>(&text) {
                         Ok(RelayMessage::Welcome { url, .. }) => log(&format!("Connected. Connector URL: {url}")),
                         Ok(RelayMessage::List { id }) => {
+                            log(APP_CONNECTED);
                             // Read the config fresh: which tools exist depends on folder permissions.
                             let cfg = Config::load().ok().flatten().unwrap_or_default();
                             let msg = AgentMessage::Result { id, result: serde_json::json!({ "tools": tools::definitions(&cfg) }), timing: None };

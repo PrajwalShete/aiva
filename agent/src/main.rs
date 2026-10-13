@@ -1,6 +1,7 @@
 mod agent;
 mod commands;
 mod config;
+mod discover;
 mod protocol;
 mod service;
 mod setup;

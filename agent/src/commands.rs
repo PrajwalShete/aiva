@@ -35,30 +35,40 @@ pub fn status(as_json: bool) -> Result<()> {
         println!("{}", serde_json::to_string_pretty(&out)?);
         return Ok(());
     }
-    ui::heading(format!("aiva {}", crate::VERSION));
-    row("Connector URL", cyan(cfg.connector_url()));
+    let online = remote.as_ref().ok().and_then(|v| v["online"].as_bool()) == Some(true);
+    let dot = if online { console::style("●").green().to_string() } else { console::style("●").red().to_string() };
+    println!();
+    println!("  {}  {}  {}", console::style("●").color256(208), bold("aiva"), dim(format!("v{}", crate::VERSION)));
+    println!();
     row(
-        "Connection",
+        "Status",
         match &remote {
-            Ok(v) if v["online"].as_bool() == Some(true) => {
-                format!("online{}", v["device"].as_str().map(|d| format!(" as {d}")).unwrap_or_default())
-            }
-            Ok(_) => "offline (Claude can't reach this computer)".into(),
-            Err(e) => format!("unknown ({e})"),
+            Ok(v) if online => format!("{dot} Online{}", v["device"].as_str().map(|d| dim(format!(" as {d}"))).unwrap_or_default()),
+            Ok(_) => format!("{dot} Offline {}", dim("· your AI can't reach this computer (see aiva doctor)")),
+            Err(e) => format!("{} Unknown {}", console::style("●").yellow(), dim(format!("· {e}"))),
         },
     );
-    row("Service", format!("{state}  {}", dim(service::describe())));
-    let writable = cfg.folders.iter().filter(|f| f.writable()).count();
-    row("Folders", format!("{} shared, {}", cfg.folders.len(), if writable == 0 { "read-only".to_string() } else { format!("{writable} with edits allowed") }));
+    row("URL", cyan(cfg.connector_url()));
+    row(
+        "Service",
+        match state {
+            service::State::Running { .. } => format!("Running {}", dim("· starts at login")),
+            service::State::Stopped => format!("Stopped {}", dim("· aiva start")),
+            service::State::NotInstalled => format!("Not installed {}", dim("· aiva service install")),
+        },
+    );
+    row("Folders", format!("{} shared", cfg.folders.len()));
+    let w = cfg.folders.iter().map(|f| f.label.chars().count()).max().unwrap_or(0).max(8);
     for f in &cfg.folders {
-        let access = if f.writable() { "read + write" } else { "read-only" };
-        println!("    {:<18} {}  {}", bold(&f.label), dim(ui::tilde(&f.path)), dim(access));
+        let access = if f.writable() { ui::accent(format!("{:<12}", "read + write")) } else { dim(format!("{:<12}", "read-only")) };
+        println!("  {:<12}{:<w$}  {access}  {}", "", f.label, dim(ui::tilde(&f.path)));
     }
+    println!();
     Ok(())
 }
 
 fn row(label: &str, value: impl std::fmt::Display) {
-    println!("  {:<15} {value}", dim(label));
+    println!("  {}{value}", dim(format!("{label:<12}")));
 }
 
 pub fn folders_list() -> Result<()> {
