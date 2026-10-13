@@ -18,7 +18,7 @@ mod overview;
 mod run;
 mod search;
 mod symbols;
-mod workspace;
+pub(crate) mod workspace;
 
 use crate::config::Config;
 use serde_json::{Value, json};

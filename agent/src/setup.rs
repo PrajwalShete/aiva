@@ -5,11 +5,11 @@
 //! opens. The server never stores either.
 
 use crate::config::{self, Config};
-use crate::ui::{self, accent, bold, cyan, dim, green};
-use crate::{agent, discover, service};
+use crate::ui::{self, bold, cyan, dim, green};
+use crate::{agent, discover, picker, service};
 use anyhow::{Result, bail};
 use clap::Args;
-use dialoguer::{Confirm, Input, MultiSelect};
+use dialoguer::{Confirm, MultiSelect};
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -100,6 +100,7 @@ fn trace(msg: &str) {
 fn pick_folders(cfg: &mut Config) -> Result<()> {
     ui::info(dim("Your AI can read only these folders, and never secret files like .env or keys."));
     ui::blank();
+    let index = discover::index_folders();
     let pb = ui::spinner("Looking for your projects…");
     let started = Instant::now();
     let found = discover::projects_within(30, Duration::from_secs(4), |n, at| {
@@ -111,108 +112,46 @@ fn pick_folders(cfg: &mut Config) -> Result<()> {
     trace(&format!("project search: {} found in {} ms", found.len(), started.elapsed().as_millis()));
 
     // Already-shared folders first (checked), then discovered projects, newest first.
-    struct Row {
-        path: PathBuf,
-        name: String,
-        kind: String,
-        when: String,
-    }
-    let mut rows: Vec<Row> = cfg
+    let mut rows: Vec<picker::Row> = cfg
         .folders
         .iter()
-        .map(|f| Row { path: f.path.clone(), name: f.label.clone(), kind: "shared".into(), when: String::new() })
+        .map(|f| picker::Row { path: f.path.clone(), name: f.label.clone(), kind: "shared".into(), when: String::new() })
         .collect();
     for p in found {
         if !rows.iter().any(|r| r.path == p.path) {
-            rows.push(Row { path: p.path, name: p.name, kind: p.kind, when: crate::tools::ago(p.modified) });
+            rows.push(picker::Row { path: p.path, name: p.name, kind: p.kind, when: crate::tools::ago(p.modified) });
         }
     }
-    let name_w = rows.iter().map(|r| r.name.chars().count()).max().unwrap_or(0).clamp(8, 24);
-    let kind_w = rows.iter().map(|r| r.kind.chars().count()).max().unwrap_or(0).clamp(4, 18);
-    let mut items: Vec<String> = rows
-        .iter()
-        .map(|r| {
-            let name: String = r.name.chars().take(name_w).collect();
-            format!(
-                "{:<name_w$}  {}  {}  {}",
-                name,
-                dim(format!("{:<kind_w$}", r.kind)),
-                dim(format!("{:<8}", r.when)),
-                dim(ui::tilde(&r.path))
-            )
-        })
-        .collect();
-    items.push(accent("+ Add a folder by path…"));
-    let defaults: Vec<bool> = rows.iter().map(|r| cfg.folders.iter().any(|f| f.path == r.path)).chain([rows.is_empty()]).collect();
-
-    let mut defaults = defaults;
-    let picked = loop {
-        ui::flush_input();
-        let picked = MultiSelect::with_theme(&ui::theme())
-            .with_prompt(format!("Folders to share {}", dim("· space to select, enter to confirm")))
-            .items(&items)
-            .defaults(&defaults)
-            .max_length(14)
-            .report(false)
-            .interact_opt()?;
-        match picked {
-            Some(p) if !p.is_empty() => break p,
-            // Esc, or Enter with nothing selected: explain and ask again instead of moving on.
-            _ => {
-                ui::warn(format!(
-                    "Select at least one folder with {}, or choose {} to type one.",
-                    bold("space"),
-                    accent("+ Add a folder by path…")
-                ));
-                defaults = vec![false; items.len()];
-            }
+    let shared: Vec<PathBuf> = cfg.folders.iter().map(|f| f.path.clone()).collect();
+    ui::flush_input();
+    let mut chosen = picker::folders("Folders to share", rows, &shared, index)?;
+    // Sharing a whole home folder or disk is almost never what someone means.
+    let mut kept = Vec::new();
+    for path in chosen.drain(..) {
+        if is_too_broad(&path)
+            && !Confirm::with_theme(&ui::theme())
+                .with_prompt(format!("{} contains everything in it. Share it anyway?", ui::tilde(&path)))
+                .default(false)
+                .interact()?
+        {
+            continue;
         }
-    };
-    let add_by_path = picked.contains(&rows.len());
-    let chosen: Vec<PathBuf> = picked.iter().filter(|&&i| i < rows.len()).map(|&i| rows[i].path.clone()).collect();
-    cfg.folders.retain(|f| chosen.contains(&f.path));
-    for path in &chosen {
-        cfg.add_folder(path)?;
+        kept.push(path);
     }
-    if add_by_path || cfg.folders.is_empty() {
-        ask_paths(cfg)?;
+    cfg.folders.retain(|f| kept.contains(&f.path));
+    for path in &kept {
+        if let Err(e) = cfg.add_folder(path) {
+            ui::fail(format!("{e:#}"));
+        }
+    }
+    if cfg.folders.is_empty() {
+        ui::warn("No folders shared yet. Pick at least one.");
+        return pick_folders(cfg);
     }
     for f in &cfg.folders {
         ui::ok(format!("{}  {}", bold(&f.label), dim(ui::tilde(&f.path))));
     }
     Ok(())
-}
-
-fn ask_paths(cfg: &mut Config) -> Result<()> {
-    loop {
-        let answer: String = Input::with_theme(&ui::theme())
-            .with_prompt("Folder path")
-            .allow_empty(!cfg.folders.is_empty())
-            .report(false)
-            .interact_text()?;
-        if answer.trim().is_empty() {
-            return Ok(());
-        }
-        for part in answer.split(',').map(str::trim).filter(|p| !p.is_empty()) {
-            let path = config::expand_tilde(part);
-            if is_too_broad(&path)
-                && !Confirm::with_theme(&ui::theme())
-                    .with_prompt(format!("{part} contains everything in it. Share it anyway?"))
-                    .default(false)
-                    .interact()?
-            {
-                continue;
-            }
-            if let Err(e) = cfg.add_folder(&path) {
-                ui::fail(format!("{e:#}"));
-            }
-        }
-        if !cfg.folders.is_empty()
-            && !Confirm::with_theme(&ui::theme()).with_prompt("Add another path?").default(false).interact()?
-        {
-            return Ok(());
-        }
-    }
 }
 
 fn is_too_broad(path: &std::path::Path) -> bool {

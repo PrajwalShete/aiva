@@ -172,3 +172,51 @@ fn projects_with(limit: usize, progress: &Progress) -> Vec<Project> {
     found.truncate(limit);
     found
 }
+
+/// Every folder under the home directory (shallowest first), collected in the background so the
+/// setup picker can search them by name as the user types.
+pub struct FolderIndex {
+    /// (path, lowercase folder name)
+    pub folders: std::sync::Mutex<Vec<(PathBuf, String)>>,
+    pub done: std::sync::atomic::AtomicBool,
+}
+
+pub fn index_folders() -> std::sync::Arc<FolderIndex> {
+    let index = std::sync::Arc::new(FolderIndex { folders: Default::default(), done: Default::default() });
+    let worker = index.clone();
+    std::thread::spawn(move || {
+        let started = Instant::now();
+        let mut queue = std::collections::VecDeque::new();
+        if let Some(home) = dirs::home_dir() {
+            queue.push_back((home, 0usize));
+        }
+        let mut batch = Vec::new();
+        while let Some((dir, depth)) = queue.pop_front() {
+            if started.elapsed() > Duration::from_secs(10) || worker.folders.lock().unwrap().len() > 150_000 {
+                break;
+            }
+            let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+            for e in entries.flatten() {
+                let name = e.file_name().to_string_lossy().into_owned();
+                if name.starts_with('.') || SKIP.contains(&name.as_str()) || crate::tools::workspace::SKIPPED_DIRS.contains(&name.as_str()) {
+                    continue;
+                }
+                // file_type() doesn't follow symlinks, so linked folders can't loop.
+                if !e.file_type().is_ok_and(|t| t.is_dir()) || e.metadata().is_ok_and(|m| dataless(&m)) {
+                    continue;
+                }
+                let path = e.path();
+                batch.push((path.clone(), name.to_lowercase()));
+                if depth < 6 {
+                    queue.push_back((path, depth + 1));
+                }
+            }
+            if batch.len() >= 500 {
+                worker.folders.lock().unwrap().append(&mut batch);
+            }
+        }
+        worker.folders.lock().unwrap().append(&mut batch);
+        worker.done.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+    index
+}

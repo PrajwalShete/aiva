@@ -202,57 +202,65 @@ pub fn wait_enter() -> bool {
 
 // ---- The mark and the home screen ---------------------------------------------------------
 
-const MARK_W: usize = 44;
+const MARK_W: usize = 40;
 const MARK_H: usize = 17;
 
-/// The aiva mark drawn in text: a shaded orange sphere (the brand dot) with three voice waves,
-/// fading from light to dark gray. Computed, so it stays crisp and consistent.
+/// The aiva mark drawn in text: the brand dot eclipsed into a dark disc, haloed by an orange
+/// corona with a bright flare at the lower right. Computed, so it stays crisp and consistent.
 pub fn mark() -> Vec<String> {
-    const RAMP: &[u8] = b" .:-=+*#%";
-    let (cx, cy, aspect) = (10.5f64, 8.5f64 * 2.05, 2.05f64);
-    let dot_r = 8.4;
-    let waves = [(13.6, 1.9, 252u8), (19.4, 1.9, 246u8), (25.2, 1.9, 240u8)];
-    let limit = 50f64.to_radians();
+    mark_frame(0.3)
+}
+
+/// One frame of the mark at `t` seconds: rings of light ripple outward through the corona like
+/// sound waves, the streamers drift slowly and the flare breathes.
+pub fn mark_frame(t: f64) -> Vec<String> {
+    const RAMP: &[u8] = b" .:-=+*#%@";
+    let sample = |i: f64, j: f64| -> f64 {
+        let x = (i - (MARK_W as f64 - 1.0) / 2.0) / 2.0;
+        let y = j - (MARK_H as f64 - 1.0) / 2.0;
+        let r = x.hypot(y);
+        let disc = 5.3;
+        if (x + 0.35).hypot(y + 0.25) < disc {
+            return 0.0;
+        }
+        let angle = y.atan2(x);
+        let d = (r - disc + 0.4).max(0.0);
+        let bias = 0.5 + 0.5 * (angle - 0.75).cos().max(0.0).powf(1.5);
+        let stream = 0.8 + 0.2 * (angle * 5.0 + 0.7 - 0.5 * t).cos();
+        let mut v = ((-d / 1.1).exp() + 0.3 * (-d / 2.6).exp()) * (0.62 + 0.38 * bias) * stream * 1.3;
+        let phase = (d / 2.4 - t / 1.8).rem_euclid(1.0);
+        let wave = (-((phase - 0.5) / 0.13).powi(2)).exp();
+        v += 0.45 * wave * ((8.3 - r) / 2.2).clamp(0.0, 1.0) * (0.7 + 0.3 * bias);
+        let (fx, fy) = (x - 3.75, y - 3.75);
+        v += (-(fx * fx * 0.8 + fy * fy) / 0.5).exp() * 1.5 * (1.0 + 0.15 * (t * 2.6).sin());
+        v.min(1.0)
+    };
     let mut lines = Vec::with_capacity(MARK_H);
-    for y in 0..MARK_H {
+    for j in 0..MARK_H {
         let mut line = String::new();
-        for x in 0..MARK_W {
-            let (px, py) = (x as f64 + 0.5, (y as f64 + 0.5) * aspect);
-            let (dx, dy) = (px - cx, py - cy);
-            let d = dx.hypot(dy);
-            // Sphere: coverage from the edge, shade from a light at the top-left.
-            let cover = ((dot_r - d) / 1.6 + 0.5).clamp(0.0, 1.0);
-            let mut best = (cover, None::<u8>);
-            if cover > 0.05 {
-                let nx = dx / dot_r;
-                let ny = dy / dot_r;
-                let nz = (1.0 - (nx * nx + ny * ny).min(1.0)).sqrt();
-                let light = ((-0.45 * nx - 0.55 * ny + 0.70 * nz).max(0.0) * 0.85 + 0.15).clamp(0.0, 1.0);
-                let color = match light {
-                    l if l > 0.80 => 223,
-                    l if l > 0.62 => 215,
-                    l if l > 0.45 => 209,
-                    l if l > 0.30 => 202,
-                    _ => 166,
-                };
-                best = (cover * (0.55 + 0.45 * light), Some(color));
-            }
-            let angle = dy.atan2(dx).abs();
-            if dx > 0.0 && angle < limit {
-                let fall = ((limit - angle) / 14f64.to_radians()).clamp(0.0, 1.0);
-                for (radius, thickness, gray) in waves {
-                    let v = (1.0 - (d - radius).abs() / thickness).max(0.0) * fall;
-                    if v > best.0 {
-                        best = (v, Some(gray));
-                    }
+        for i in 0..MARK_W {
+            let mut sum = 0.0;
+            for a in 0..3 {
+                for b in 0..3 {
+                    sum += sample(i as f64 + (a as f64 + 0.5) / 3.0 - 0.5, j as f64 + (b as f64 + 0.5) / 3.0 - 0.5);
                 }
             }
-            let idx = ((best.0 * (RAMP.len() - 1) as f64) + 0.35) as usize;
-            let ch = RAMP[idx.min(RAMP.len() - 1)] as char;
-            match best.1 {
-                Some(color) if ch != ' ' => line.push_str(&style(ch).color256(color).to_string()),
-                _ => line.push(' '),
+            let v = sum / 9.0;
+            if v < 0.11 {
+                line.push(' ');
+                continue;
             }
+            let ch = RAMP[((v * RAMP.len() as f64) as usize).min(RAMP.len() - 1)] as char;
+            let color = match v * 1.05 {
+                c if c >= 0.90 => 230,
+                c if c >= 0.78 => 223,
+                c if c >= 0.62 => 215,
+                c if c >= 0.45 => 208,
+                c if c >= 0.32 => 202,
+                c if c >= 0.20 => 166,
+                _ => 130,
+            };
+            line.push_str(&style(ch).color256(color).to_string());
         }
         lines.push(line);
     }
@@ -262,28 +270,34 @@ pub fn mark() -> Vec<String> {
 /// The mark on the left and `right` (already styled) on the right, vertically centered.
 /// Stacks them on narrow terminals and drops the mark when there's no room.
 pub fn hero(right: &[String]) {
+    print!("{}", hero_text(right, &mark()));
+}
+
+/// The hero as text, every line starting with "clear line" so it can be redrawn in place.
+fn hero_text(right: &[String], mark: &[String]) -> String {
+    use std::fmt::Write;
     let w = Term::stdout().size_checked().map(|(_, w)| w as usize).unwrap_or(80);
-    let mark = mark();
     let right_w = right.iter().map(|l| measure_text_width(l)).max().unwrap_or(0);
-    println!();
+    let mut out = String::from("\x1b[2K\n");
     if w >= MARK_W + 6 + right_w {
         let top = (MARK_H.saturating_sub(right.len())) / 2;
         for (i, art) in mark.iter().enumerate() {
             let text = i.checked_sub(top).and_then(|j| right.get(j)).map(String::as_str).unwrap_or("");
-            println!("  {art}    {text}");
+            let _ = writeln!(out, "\x1b[2K  {art}    {text}");
         }
     } else {
         if w >= MARK_W + 4 {
-            for art in &mark {
-                println!("  {art}");
+            for art in mark {
+                let _ = writeln!(out, "\x1b[2K  {art}");
             }
-            println!();
+            out.push_str("\x1b[2K\n");
         }
         for l in right {
-            println!("  {l}");
+            let _ = writeln!(out, "\x1b[2K  {l}");
         }
     }
-    println!();
+    out.push_str("\x1b[2K\n");
+    out
 }
 
 /// Name, tagline, version and divider: the top of the right column.
@@ -327,23 +341,82 @@ pub fn hero_menu(subtitle: &str, items: &[(&str, &str)], start: usize) -> Option
         if w >= MARK_W + 6 + right_w { MARK_H.max(right.len()) + 2 } else if w >= MARK_W + 4 { MARK_H + 1 + right.len() + 2 } else { right.len() + 2 }
     };
     let _ = term.hide_cursor();
+    let raw = RawInput::enable();
+    let started = std::time::Instant::now();
     let mut right = render(current);
-    hero(&right);
+    let mut drawn = false;
     let chosen = loop {
+        if drawn {
+            let _ = term.move_cursor_up(height(&right));
+        }
+        right = render(current);
+        let t = if raw.is_some() { started.elapsed().as_secs_f64() } else { 0.3 };
+        let _ = term.write_str(&hero_text(&right, &mark_frame(t)));
+        let _ = term.clear_to_end_of_screen();
+        drawn = true;
+        // Keep the waves moving until a key arrives (about 15 frames a second).
+        if raw.is_some() && !RawInput::wait(Duration::from_millis(66)) {
+            continue;
+        }
         let key = term.read_key();
         match key {
             Ok(console::Key::ArrowUp) | Ok(console::Key::Char('k')) => current = current.checked_sub(1).unwrap_or(items.len() - 1),
             Ok(console::Key::ArrowDown) | Ok(console::Key::Char('j')) | Ok(console::Key::Tab) => current = (current + 1) % items.len(),
             Ok(console::Key::Enter) => break Some(current),
-            Ok(console::Key::Escape) | Ok(console::Key::Char('q')) | Err(_) => break None,
-            _ => continue,
+            Ok(console::Key::Escape) | Ok(console::Key::Char('q' | '\u{3}')) | Ok(console::Key::CtrlC) | Err(_) => break None,
+            _ => {}
         }
-        let lines = height(&right);
-        let _ = term.move_cursor_up(lines);
-        let _ = term.clear_to_end_of_screen();
-        right = render(current);
-        hero(&right);
     };
+    drop(raw);
     let _ = term.show_cursor();
     chosen
+}
+
+/// Keeps the terminal out of line mode (no echo, keys arrive at once) so the menu can wait for a
+/// key with a timeout and animate meanwhile. Restores the previous mode when dropped.
+pub struct RawInput(libc::termios);
+
+impl RawInput {
+    pub fn enable() -> Option<Self> {
+        unsafe {
+            if libc::isatty(libc::STDIN_FILENO) != 1 {
+                return None;
+            }
+            let mut saved: libc::termios = std::mem::zeroed();
+            if libc::tcgetattr(libc::STDIN_FILENO, &mut saved) != 0 {
+                return None;
+            }
+            let mut raw = saved;
+            raw.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG);
+            raw.c_cc[libc::VMIN] = 1;
+            raw.c_cc[libc::VTIME] = 0;
+            if libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &raw) != 0 {
+                return None;
+            }
+            Some(Self(saved))
+        }
+    }
+
+    /// True when a key is waiting to be read. Uses select(), because macOS poll() can't wait on
+    /// terminals.
+    pub fn wait(timeout: Duration) -> bool {
+        unsafe {
+            let mut set: libc::fd_set = std::mem::zeroed();
+            libc::FD_ZERO(&mut set);
+            libc::FD_SET(libc::STDIN_FILENO, &mut set);
+            let mut tv = libc::timeval {
+                tv_sec: timeout.as_secs() as _,
+                tv_usec: timeout.subsec_micros() as _,
+            };
+            libc::select(libc::STDIN_FILENO + 1, &mut set, std::ptr::null_mut(), std::ptr::null_mut(), &mut tv) > 0
+        }
+    }
+}
+
+impl Drop for RawInput {
+    fn drop(&mut self) {
+        unsafe {
+            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &self.0);
+        }
+    }
 }

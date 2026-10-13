@@ -2,6 +2,7 @@ mod agent;
 mod commands;
 mod config;
 mod discover;
+mod picker;
 mod protocol;
 mod service;
 mod setup;
