@@ -98,9 +98,10 @@ export async function packSigned(env: Env, type: number, fields: Uint8Array<Arra
   return b64url(out);
 }
 
-/** The fields of a compact token of `type` whose MAC checks out, or null. */
-export async function unpackSigned(env: Env, token: string | null | undefined, type: number): Promise<Uint8Array | null> {
-  if (!token || !/^[A-Za-z0-9_-]{24,200}$/.test(token)) return null;
+/** The fields of a compact token of `type` whose MAC checks out, or null. `maxLength` bounds the
+ * work done on junk input; client ids carry their redirect URIs, so they need more room. */
+export async function unpackSigned(env: Env, token: string | null | undefined, type: number, maxLength = 200): Promise<Uint8Array | null> {
+  if (!token || token.length > maxLength || !/^[A-Za-z0-9_-]{24,}$/.test(token)) return null;
   let raw: Uint8Array;
   try {
     raw = fromB64url(token);

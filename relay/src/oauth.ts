@@ -139,7 +139,9 @@ export async function register(req: Request, env: Env): Promise<Response> {
 
 async function getClient(env: Env, clientId: string | null | undefined): Promise<Client | null> {
   if (!clientId?.startsWith("aiva_client_")) return null;
-  const fields = await unpackSigned(env, clientId.slice(12), CLIENT);
+  // Up to 10 redirect URIs of up to 1000 characters each (see register); Gemini's alone makes
+  // the id ~240 characters.
+  const fields = await unpackSigned(env, clientId.slice(12), CLIENT, 16_000);
   if (!fields) return null;
   try {
     const c = JSON.parse(new TextDecoder().decode(fields)) as Omit<Client, "t">;
