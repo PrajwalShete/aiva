@@ -33,10 +33,6 @@ pub fn ok(msg: impl std::fmt::Display) {
     println!("  {} {msg}", style("✓").green());
 }
 
-pub fn warn(msg: impl std::fmt::Display) {
-    println!("  {} {msg}", style("!").yellow().bold());
-}
-
 pub fn fail(msg: impl std::fmt::Display) {
     eprintln!("  {} {msg}", style("✗").red().bold());
 }
@@ -57,42 +53,38 @@ fn width() -> usize {
     Term::stdout().size_checked().map(|(_, w)| w as usize).unwrap_or(80).clamp(40, 100)
 }
 
-/// The opening of `aiva setup`: the mark with the brand column beside it.
-pub fn banner(subtitle: &str) {
-    hero(&brand_lines(subtitle));
-}
-
-/// `── 1 of 3 · Choose folders ──────────`
-pub fn step(n: usize, total: usize, title: &str) {
+/// The step header as lines: a blank, `── 1 of 3 · Choose folders ──────────`, a blank.
+pub fn step_lines(n: usize, total: usize, title: &str) -> Vec<String> {
     let label = format!(" {n} of {total} · {title} ");
     let line = width().min(72) - 4;
     let rule = "─".repeat(line.saturating_sub(2 + measure_text_width(&label)));
-    println!();
-    println!("  {}{}{}", dim("──"), style(label).bold(), dim(rule));
-    println!();
+    vec![String::new(), format!("  {}{}{}", dim("──"), style(label).bold(), dim(rule)), String::new()]
 }
 
 /// A rounded box around `lines` (already styled). Falls back to plain lines on narrow terminals.
 pub fn card(title: &str, lines: &[String]) {
-    let inner = lines.iter().map(|l| measure_text_width(l)).chain([measure_text_width(title)]).max().unwrap_or(0) + 4;
-    if inner + 4 > width() {
-        println!("  {}", bold(title));
-        for l in lines {
-            println!("  {l}");
-        }
-        return;
+    for l in card_lines(title, lines) {
+        println!("{l}");
     }
-    let pad = |s: &str| format!("{s}{}", " ".repeat(inner.saturating_sub(measure_text_width(s) + 2)));
-    println!("  {}", dim(format!("╭{}╮", "─".repeat(inner))));
-    println!("  {} {} {}", dim("│"), pad(&bold(title)), dim("│"));
-    println!("  {} {} {}", dim("│"), pad(""), dim("│"));
-    for l in lines {
-        println!("  {} {} {}", dim("│"), pad(l), dim("│"));
-    }
-    println!("  {}", dim(format!("╰{}╯", "─".repeat(inner))));
 }
 
-/// A spinner line; finish it with `done` / `done_warn`.
+pub fn card_lines(title: &str, lines: &[String]) -> Vec<String> {
+    let inner = lines.iter().map(|l| measure_text_width(l)).chain([measure_text_width(title)]).max().unwrap_or(0) + 4;
+    if inner + 4 > width() {
+        return std::iter::once(format!("  {}", bold(title))).chain(lines.iter().map(|l| format!("  {l}"))).collect();
+    }
+    let pad = |s: &str| format!("{s}{}", " ".repeat(inner.saturating_sub(measure_text_width(s) + 2)));
+    let mut out = vec![format!("  {}", dim(format!("╭{}╮", "─".repeat(inner))))];
+    out.push(format!("  {} {} {}", dim("│"), pad(&bold(title)), dim("│")));
+    out.push(format!("  {} {} {}", dim("│"), pad(""), dim("│")));
+    for l in lines {
+        out.push(format!("  {} {} {}", dim("│"), pad(l), dim("│")));
+    }
+    out.push(format!("  {}", dim(format!("╰{}╯", "─".repeat(inner)))));
+    out
+}
+
+/// A spinner line (for plain, non full screen output).
 pub fn spinner(msg: impl Into<String>) -> ProgressBar {
     let pb = ProgressBar::new_spinner();
     pb.set_style(
@@ -103,16 +95,6 @@ pub fn spinner(msg: impl Into<String>) -> ProgressBar {
     pb.set_message(msg.into());
     pb.enable_steady_tick(Duration::from_millis(80));
     pb
-}
-
-pub fn done(pb: ProgressBar, msg: impl std::fmt::Display) {
-    pb.finish_and_clear();
-    ok(msg);
-}
-
-pub fn done_warn(pb: ProgressBar, msg: impl std::fmt::Display) {
-    pb.finish_and_clear();
-    warn(msg);
 }
 
 /// Prompt theme matching the rest: orange pointer and checks, gray hints.
@@ -202,8 +184,8 @@ pub fn wait_enter() -> bool {
 
 // ---- The mark and the home screen ---------------------------------------------------------
 
-const MARK_W: usize = 40;
-const MARK_H: usize = 17;
+pub const MARK_W: usize = 40;
+pub const MARK_H: usize = 17;
 
 /// The aiva mark drawn in text: the brand dot eclipsed into a dark disc, haloed by an orange
 /// corona with a bright flare at the lower right. Computed, so it stays crisp and consistent.
@@ -214,10 +196,16 @@ pub fn mark() -> Vec<String> {
 /// One frame of the mark at `t` seconds: rings of light ripple outward through the corona like
 /// sound waves, the streamers drift slowly and the flare breathes.
 pub fn mark_frame(t: f64) -> Vec<String> {
+    mark_sized(t, MARK_W, MARK_H)
+}
+
+/// The mark drawn `w` by `h` cells (the full mark is 40 by 17).
+pub fn mark_sized(t: f64, w: usize, h: usize) -> Vec<String> {
     const RAMP: &[u8] = b" .:-=+*#%@";
+    let scale = MARK_H as f64 / h as f64;
     let sample = |i: f64, j: f64| -> f64 {
-        let x = (i - (MARK_W as f64 - 1.0) / 2.0) / 2.0;
-        let y = j - (MARK_H as f64 - 1.0) / 2.0;
+        let x = (i - (w as f64 - 1.0) / 2.0) / 2.0 * scale;
+        let y = (j - (h as f64 - 1.0) / 2.0) * scale;
         let r = x.hypot(y);
         let disc = 5.3;
         if (x + 0.35).hypot(y + 0.25) < disc {
@@ -235,10 +223,10 @@ pub fn mark_frame(t: f64) -> Vec<String> {
         v += (-(fx * fx * 0.8 + fy * fy) / 0.5).exp() * 1.5 * (1.0 + 0.15 * (t * 2.6).sin());
         v.min(1.0)
     };
-    let mut lines = Vec::with_capacity(MARK_H);
-    for j in 0..MARK_H {
+    let mut lines = Vec::with_capacity(h);
+    for j in 0..h {
         let mut line = String::new();
-        for i in 0..MARK_W {
+        for i in 0..w {
             let mut sum = 0.0;
             for a in 0..3 {
                 for b in 0..3 {
@@ -269,42 +257,18 @@ pub fn mark_frame(t: f64) -> Vec<String> {
 
 /// One clock for every animated mark, so the waves don't jump when one screen hands over to the
 /// next (the home menu to setup).
-fn clock() -> f64 {
+pub fn clock() -> f64 {
     static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
     START.get_or_init(std::time::Instant::now).elapsed().as_secs_f64()
 }
 
-/// Lines of a hero still at the bottom of the screen (left by the home menu), which the next
-/// `LiveHero` redraws in place instead of printing a second mark.
+/// Lines of a hero still at the bottom of the screen (left by the home menu), which setup clears
+/// before it draws its own, so there is only ever one mark.
 static HERO_ON_SCREEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
-/// The hero with a moving mark, redrawn in place while work runs: call `draw` repeatedly with the
-/// right column, then `finish`.
-pub struct LiveHero {
-    drawn: usize,
-}
-
-impl LiveHero {
-    pub fn start() -> Self {
-        let _ = Term::stdout().hide_cursor();
-        Self { drawn: HERO_ON_SCREEN.swap(0, std::sync::atomic::Ordering::Relaxed) }
-    }
-
-    pub fn draw(&mut self, right: &[String]) {
-        let text = hero_text(right, &mark_frame(clock()));
-        let mut out = String::new();
-        if self.drawn > 0 {
-            out.push_str(&format!("\x1b[{}A\r", self.drawn));
-        }
-        out.push_str(&text);
-        out.push_str("\x1b[J");
-        let _ = Term::stdout().write_str(&out);
-        self.drawn = text.matches('\n').count();
-    }
-
-    pub fn finish(self) {
-        let _ = Term::stdout().show_cursor();
-    }
+/// Takes the height of the hero the home menu left on screen (0 if none).
+pub fn take_hero_on_screen() -> usize {
+    HERO_ON_SCREEN.swap(0, std::sync::atomic::Ordering::Relaxed)
 }
 
 /// A spinner glyph for animated text, in step with the mark.
@@ -321,28 +285,68 @@ pub fn hero(right: &[String]) {
 
 /// The hero as text, every line starting with "clear line" so it can be redrawn in place.
 fn hero_text(right: &[String], mark: &[String]) -> String {
-    use std::fmt::Write;
     let w = Term::stdout().size_checked().map(|(_, w)| w as usize).unwrap_or(80);
+    hero_lines(right, mark, w).iter().map(|l| format!("\x1b[2K{l}\n")).collect()
+}
+
+/// How the hero fits `w` columns: the mark beside the right column, the mark above it, or no mark.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum HeroFit {
+    Beside,
+    Above,
+    NoMark,
+}
+
+pub fn hero_fit(right: &[String], w: usize) -> HeroFit {
     let right_w = right.iter().map(|l| measure_text_width(l)).max().unwrap_or(0);
-    let mut out = String::from("\x1b[2K\n");
     if w >= MARK_W + 6 + right_w {
-        let top = (MARK_H.saturating_sub(right.len())) / 2;
-        for (i, art) in mark.iter().enumerate() {
-            let text = i.checked_sub(top).and_then(|j| right.get(j)).map(String::as_str).unwrap_or("");
-            let _ = writeln!(out, "\x1b[2K  {art}    {text}");
-        }
+        HeroFit::Beside
+    } else if w >= MARK_W + 4 {
+        HeroFit::Above
     } else {
-        if w >= MARK_W + 4 {
-            for art in mark {
-                let _ = writeln!(out, "\x1b[2K  {art}");
-            }
-            out.push_str("\x1b[2K\n");
-        }
-        for l in right {
-            let _ = writeln!(out, "\x1b[2K  {l}");
-        }
+        HeroFit::NoMark
     }
-    out.push_str("\x1b[2K\n");
+}
+
+/// Number of lines `hero_lines` returns.
+pub fn hero_height(right: &[String], w: usize) -> usize {
+    match hero_fit(right, w) {
+        HeroFit::Beside => MARK_H.max(right.len()) + 2,
+        HeroFit::Above => MARK_H + right.len() + 3,
+        HeroFit::NoMark => right.len() + 2,
+    }
+}
+
+/// The hero as lines (a blank above and below): the mark on the left and `right` (already
+/// styled) beside it, vertically centered. Stacks them on narrow terminals and drops the mark
+/// when there's no room.
+pub fn hero_lines(right: &[String], mark: &[String], w: usize) -> Vec<String> {
+    let mut out = vec![String::new()];
+    match hero_fit(right, w) {
+        HeroFit::Beside => return hero_beside(right, mark, MARK_W),
+        HeroFit::Above => {
+            out.extend(mark.iter().map(|art| format!("  {art}")));
+            out.push(String::new());
+            out.extend(right.iter().map(|l| format!("  {l}")));
+        }
+        HeroFit::NoMark => out.extend(right.iter().map(|l| format!("  {l}"))),
+    }
+    out.push(String::new());
+    out
+}
+
+/// The mark (`mark_w` columns wide) with `right` beside it, vertically centered, and a blank line
+/// above and below.
+pub fn hero_beside(right: &[String], mark: &[String], mark_w: usize) -> Vec<String> {
+    let mut out = vec![String::new()];
+    let top = mark.len().saturating_sub(right.len()) / 2;
+    let empty = " ".repeat(mark_w);
+    for i in 0..mark.len().max(right.len()) {
+        let art = mark.get(i).map(String::as_str).unwrap_or(&empty);
+        let text = i.checked_sub(top).and_then(|j| right.get(j)).map(String::as_str).unwrap_or("");
+        out.push(format!("  {art}    {text}"));
+    }
+    out.push(String::new());
     out
 }
 
@@ -381,11 +385,7 @@ pub fn hero_menu(subtitle: &str, items: &[(&str, &str)], start: usize) -> Option
         right.push(dim("↑↓ to move · enter to run · q to quit"));
         right
     };
-    let height = |right: &[String]| {
-        let w = term.size_checked().map(|(_, w)| w as usize).unwrap_or(80);
-        let right_w = right.iter().map(|l| measure_text_width(l)).max().unwrap_or(0);
-        if w >= MARK_W + 6 + right_w { MARK_H.max(right.len()) + 2 } else if w >= MARK_W + 4 { MARK_H + 1 + right.len() + 2 } else { right.len() + 2 }
-    };
+    let height = |right: &[String]| hero_height(right, term.size_checked().map(|(_, w)| w as usize).unwrap_or(80));
     let _ = term.hide_cursor();
     let raw = RawInput::enable();
     let mut right = render(current);
@@ -403,7 +403,7 @@ pub fn hero_menu(subtitle: &str, items: &[(&str, &str)], start: usize) -> Option
         if raw.is_some() && !RawInput::wait(Duration::from_millis(66)) {
             continue;
         }
-        let key = term.read_key();
+        let key = term.read_key_raw();
         match key {
             Ok(console::Key::ArrowUp) | Ok(console::Key::Char('k')) => current = current.checked_sub(1).unwrap_or(items.len() - 1),
             Ok(console::Key::ArrowDown) | Ok(console::Key::Char('j')) | Ok(console::Key::Tab) => current = (current + 1) % items.len(),
@@ -468,3 +468,4 @@ impl Drop for RawInput {
         }
     }
 }
+

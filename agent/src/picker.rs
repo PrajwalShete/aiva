@@ -3,8 +3,10 @@
 //! folder directly. Space selects, enter confirms.
 
 use crate::discover::FolderIndex;
-use crate::ui::{self, RawInput};
-use console::{Key, Term, measure_text_width, style, truncate_str};
+use crate::screen::Screen;
+use crate::ui;
+use console::{Key, style};
+use std::cell::Cell;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -12,6 +14,8 @@ use std::time::Duration;
 
 const ACCENT: u8 = 208;
 const VISIBLE: usize = 12;
+/// Fewest rows the list shrinks to before the hero gives up its mark.
+const MIN_VISIBLE: usize = 4;
 
 pub struct Row {
     pub path: PathBuf,
@@ -20,41 +24,41 @@ pub struct Row {
     pub when: String,
 }
 
-/// Returns the chosen folders (at least one). Ctrl+C exits setup.
-pub fn folders(prompt: &str, mut rows: Vec<Row>, preselected: &[PathBuf], index: Arc<FolderIndex>) -> anyhow::Result<Vec<PathBuf>> {
-    let term = Term::stdout();
-    let raw = RawInput::enable();
-    let _ = term.hide_cursor();
+/// Returns the chosen folders (at least one). Drawn on the setup screen, under the animated
+/// hero; the list shrinks to fit the window. Ctrl+C exits setup.
+pub fn folders(screen: &mut Screen, prompt: &str, mut rows: Vec<Row>, preselected: &[PathBuf], index: Arc<FolderIndex>) -> anyhow::Result<Vec<PathBuf>> {
     let mut query = String::new();
     let mut selected: Vec<PathBuf> = preselected.to_vec();
-    let (mut cursor, mut offset, mut drawn) = (0usize, 0usize, 0usize);
+    let mut cursor = 0usize;
+    let offset = Cell::new(0usize);
+    let visible = Cell::new(VISIBLE);
     let mut notice: Option<String> = None;
-    let result = loop {
+    loop {
         let entries = matches(&rows, &query, &index);
         cursor = cursor.min(entries.len().saturating_sub(1));
-        if cursor < offset {
-            offset = cursor;
-        } else if cursor >= offset + VISIBLE {
-            offset = cursor + 1 - VISIBLE;
-        }
         let searching = !index.done.load(Ordering::Relaxed);
-        let lines = render(prompt, &query, &entries, &selected, cursor, offset, searching, notice.take());
-        redraw(&term, drawn, &lines);
-        drawn = lines.len();
-
-        // While the home folder is still being indexed, refresh so new matches appear.
-        if raw.is_some() && searching && !query.is_empty() && !RawInput::wait(Duration::from_millis(150)) {
-            continue;
-        }
-        let key = match term.read_key() {
-            Ok(k) => k,
-            Err(e) => break Err(e.into()),
+        let render = |avail: usize| {
+            // Everything but the rows: header, search, blank, ↑ / ↓ more, blank, footer, notice.
+            let rows = avail.saturating_sub(7 + usize::from(notice.is_some())).clamp(MIN_VISIBLE, VISIBLE);
+            visible.set(rows);
+            let mut off = offset.get().min(entries.len().saturating_sub(rows));
+            if cursor < off {
+                off = cursor;
+            } else if cursor >= off + rows {
+                off = cursor + 1 - rows;
+            }
+            offset.set(off);
+            render(prompt, &query, &entries, &selected, cursor, off, rows, searching, notice.as_deref())
         };
+        // While the home folder is still being indexed, refresh so new matches appear.
+        let refresh = (searching && !query.is_empty()).then_some(Duration::from_millis(150));
+        let Some(key) = screen.poll(MIN_VISIBLE + 8, &render, refresh) else { continue };
+        notice = None;
         match key {
             Key::ArrowUp => cursor = cursor.checked_sub(1).unwrap_or(entries.len().saturating_sub(1)),
             Key::ArrowDown => cursor = if cursor + 1 < entries.len() { cursor + 1 } else { 0 },
-            Key::PageUp => cursor = cursor.saturating_sub(VISIBLE),
-            Key::PageDown => cursor = (cursor + VISIBLE).min(entries.len().saturating_sub(1)),
+            Key::PageUp => cursor = cursor.saturating_sub(visible.get()),
+            Key::PageDown => cursor = (cursor + visible.get()).min(entries.len().saturating_sub(1)),
             Key::Char(' ') | Key::Tab => {
                 if let Some(e) = entries.get(cursor) {
                     toggle(&mut selected, &mut rows, e);
@@ -71,33 +75,22 @@ pub fn folders(prompt: &str, mut rows: Vec<Row>, preselected: &[PathBuf], index:
                     }
                 }
                 if !selected.is_empty() {
-                    break Ok(selected.clone());
+                    return Ok(selected);
                 }
                 notice = Some("Type a folder name or a path like ~/work/app, then press space.".into());
             }
-            Key::Escape => query.clear(),
+            Key::Escape | Key::Char('\u{15}') => query.clear(), // esc, ctrl+u
             Key::Backspace => {
                 query.pop();
                 cursor = 0;
             }
-            Key::CtrlC | Key::Char('\u{3}') => {
-                redraw(&term, drawn, &[]);
-                drop(raw);
-                let _ = term.show_cursor();
-                std::process::exit(130);
-            }
-            Key::Char('\u{15}') => query.clear(), // ctrl+u
             Key::Char(c) if !c.is_control() => {
                 query.push(c);
                 cursor = 0;
             }
             _ => {}
         }
-    };
-    redraw(&term, drawn, &[]);
-    drop(raw);
-    let _ = term.show_cursor();
-    result
+    }
 }
 
 struct Entry {
@@ -207,8 +200,9 @@ fn render(
     selected: &[PathBuf],
     cursor: usize,
     offset: usize,
+    visible: usize,
     searching: bool,
-    notice: Option<String>,
+    notice: Option<&str>,
 ) -> Vec<String> {
     let accent = |s: &str| style(s.to_string()).color256(ACCENT).to_string();
     let mut lines = vec![format!(
@@ -239,7 +233,7 @@ fn render(
     if offset > 0 {
         lines.push(format!("     {}", ui::dim(format!("↑ {offset} more"))));
     }
-    for (i, e) in entries.iter().enumerate().skip(offset).take(VISIBLE) {
+    for (i, e) in entries.iter().enumerate().skip(offset).take(visible) {
         let checked = selected.contains(&e.path);
         let pointer = if i == cursor { accent("›") } else { " ".into() };
         let check = if checked { accent("◉") } else { ui::dim("○") };
@@ -253,7 +247,7 @@ fn render(
             ui::dim(ui::tilde(&e.path))
         ));
     }
-    let below = entries.len().saturating_sub(offset + VISIBLE);
+    let below = entries.len().saturating_sub(offset + visible);
     if below > 0 {
         lines.push(format!("     {}", ui::dim(format!("↓ {below} more"))));
     }
@@ -271,24 +265,4 @@ fn render(
         lines.push(format!("  {}", style(n).color256(ACCENT)));
     }
     lines
-}
-
-/// Replaces the previously drawn `drawn` lines with `lines`, in one write. Lines are cut to the
-/// terminal width so nothing wraps and the line count stays right.
-fn redraw(term: &Term, drawn: usize, lines: &[String]) {
-    let width = term.size_checked().map(|(_, w)| w as usize).unwrap_or(80).saturating_sub(1);
-    let mut out = String::new();
-    if drawn > 0 {
-        out.push_str(&format!("\x1b[{drawn}A"));
-    }
-    out.push_str("\r\x1b[J");
-    for l in lines {
-        if measure_text_width(l) > width {
-            out.push_str(&truncate_str(l, width, "…"));
-        } else {
-            out.push_str(l);
-        }
-        out.push('\n');
-    }
-    let _ = term.write_str(&out);
 }

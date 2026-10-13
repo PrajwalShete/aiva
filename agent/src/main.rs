@@ -4,6 +4,7 @@ mod config;
 mod discover;
 mod picker;
 mod protocol;
+mod screen;
 mod service;
 mod setup;
 mod tools;

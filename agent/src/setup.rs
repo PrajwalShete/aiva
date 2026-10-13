@@ -6,10 +6,11 @@
 
 use crate::config::{self, Config};
 use crate::ui::{self, bold, cyan, dim, green};
+use crate::screen::Screen;
 use crate::{agent, discover, picker, service};
 use anyhow::{Result, bail};
 use clap::Args;
-use dialoguer::{Confirm, MultiSelect};
+use dialoguer::Confirm;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -37,34 +38,34 @@ pub fn run(args: SetupArgs) -> Result<()> {
     }
     let total = 3;
 
+    // Picking folders runs full screen with the mark animating throughout; the rest stays plain.
     let picking = interactive && args.folders.is_empty();
-    let search = if picking { Some(intro()) } else { None };
-    if !picking {
-        ui::banner("Setup");
-    }
-    if cfg.key.is_some() && !cfg.folders.is_empty() {
-        ui::info(dim("Already set up. Running setup again keeps your URL and token; change anything below."));
-    }
+    let mut screen = Screen::start(picking);
+    let search = if picking { Some(intro(&mut screen)) } else { None };
+    screen.banner();
 
     // ── 1. Folders ──
-    ui::step(1, total, "Choose folders");
+    screen.step(1, total, "Choose folders");
+    if cfg.key.is_some() && !cfg.folders.is_empty() {
+        screen.info(dim("Already set up. Running setup again keeps your URL and token; change anything below."));
+    }
     if !args.folders.is_empty() {
         for path in &args.folders {
             let folder = cfg.add_folder(path)?;
-            ui::ok(format!("{}  {}", bold(&folder.label), dim(ui::tilde(&folder.path))));
+            screen.ok(format!("{}  {}", bold(&folder.label), dim(ui::tilde(&folder.path))));
         }
     } else if let Some((found, index)) = search {
-        pick_folders(&mut cfg, found, index)?;
+        pick_folders(&mut screen, &mut cfg, found, index)?;
     } else if cfg.folders.is_empty() {
         bail!("--folder is required when not running in a terminal");
     }
 
     // ── 2. Edits ──
-    ui::step(2, total, "Allow edits (optional)");
-    if interactive && args.folders.is_empty() {
-        pick_writable(&mut cfg)?;
+    screen.step(2, total, "Allow edits (optional)");
+    if picking {
+        pick_writable(&mut screen, &mut cfg)?;
     } else {
-        ui::info(dim("Read-only. Allow edits later with `aiva folders set <name> write`."));
+        screen.info(dim("Read-only. Allow edits later with `aiva folders set <name> write`."));
     }
     if cfg.key.is_none() {
         cfg.key = Some(config::generate_key()?);
@@ -72,23 +73,24 @@ pub fn run(args: SetupArgs) -> Result<()> {
     cfg.save()?;
 
     // ── 3. Connect ──
-    ui::step(3, total, "Connect your AI app");
+    screen.step(3, total, "Connect your AI app");
     if !args.no_service {
-        install_service_quietly()?;
+        install_service_quietly(&mut screen)?;
     }
-    let pb = ui::spinner("Connecting to the aiva relay…");
-    match crate::tokio_main(agent::verify(&cfg)) {
-        Ok(_) => ui::done(pb, format!("Connected to {}", dim(&cfg.server))),
-        Err(e) => ui::done_warn(pb, format!("Couldn't reach the relay yet ({e}). aiva keeps retrying in the background.")),
+    let probe = cfg.clone();
+    match screen.work("Connecting to the aiva relay…", move || crate::tokio_main(agent::verify(&probe))) {
+        Ok(_) => screen.ok(format!("Connected to {}", dim(&cfg.server))),
+        Err(e) => screen.warn(format!("Couldn't reach the relay yet ({e}). aiva keeps retrying in the background.")),
     }
-    ui::blank();
-    connect_card(&cfg);
+    screen.blank();
+    screen.card("Add aiva to your AI app", &connect_lines(&cfg));
 
     if interactive {
-        guide(&cfg)?;
+        guide(&mut screen, &cfg)?;
     } else {
-        ui::info(dim("Add the URL as a custom connector, click Connect, and paste the token."));
+        screen.info(dim("Add the URL as a custom connector, click Connect, and paste the token."));
     }
+    screen.finish();
     Ok(())
 }
 
@@ -103,37 +105,39 @@ fn trace(msg: &str) {
 
 /// The opening: the mark animates while this computer is searched for projects (and indexed
 /// for the picker's search), for at least one full wave so it never just flickers.
-fn intro() -> (Vec<discover::Project>, std::sync::Arc<discover::FolderIndex>) {
+fn intro(screen: &mut Screen) -> (Vec<discover::Project>, std::sync::Arc<discover::FolderIndex>) {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     let index = discover::index_folders();
-    let mut hero = ui::LiveHero::start();
-    let status = |line: String| {
-        let mut right = ui::brand_lines("Setup");
-        right.push(String::new());
-        right.push(line);
-        right
-    };
     let started = Instant::now();
-    let found = discover::projects_within(30, Duration::from_secs(4), |n, _| {
-        hero.draw(&status(format!("{} Looking for your projects… {}", ui::spin(), dim(format!("{n} found")))));
-    });
+    let count = Arc::new(AtomicUsize::new(0));
+    let search = {
+        let count = count.clone();
+        std::thread::spawn(move || discover::projects_within(30, Duration::from_secs(4), |n, _| count.store(n, Ordering::Relaxed)))
+    };
+    let nothing = |_: usize| Vec::new();
+    while !search.is_finished() {
+        let n = count.load(Ordering::Relaxed);
+        screen.set_status(vec![format!("{} Looking for your projects… {}", ui::spin(), dim(format!("{n} found")))]);
+        screen.poll(0, &nothing, Some(Duration::from_millis(66)));
+    }
+    let found = search.join().unwrap_or_default();
     trace(&format!("project search: {} found in {} ms", found.len(), started.elapsed().as_millis()));
     let summary = match found.len() {
         0 => dim("Ready").to_string(),
         1 => format!("{} {}", green("✓"), "Found 1 project"),
         n => format!("{} Found {n} projects", green("✓")),
     };
-    while started.elapsed() < Duration::from_millis(1800) {
-        hero.draw(&status(summary.clone()));
-        std::thread::sleep(Duration::from_millis(70));
+    screen.set_status(vec![summary]);
+    if let Some(rest) = Duration::from_millis(1800).checked_sub(started.elapsed()) {
+        screen.poll(0, &nothing, Some(rest));
     }
-    hero.draw(&status(summary));
-    hero.finish();
     (found, index)
 }
 
-fn pick_folders(cfg: &mut Config, found: Vec<discover::Project>, index: std::sync::Arc<discover::FolderIndex>) -> Result<()> {
-    ui::info(dim("Your AI can read only these folders, and never secret files like .env or keys."));
-    ui::blank();
+fn pick_folders(screen: &mut Screen, cfg: &mut Config, found: Vec<discover::Project>, index: std::sync::Arc<discover::FolderIndex>) -> Result<()> {
+    screen.info(dim("Your AI can read only these folders, and never secret files like .env or keys."));
+    screen.blank();
     // Already-shared folders first (checked), then discovered projects, newest first.
     let mut rows: Vec<picker::Row> = cfg
         .folders
@@ -147,16 +151,11 @@ fn pick_folders(cfg: &mut Config, found: Vec<discover::Project>, index: std::syn
     }
     let shared: Vec<PathBuf> = cfg.folders.iter().map(|f| f.path.clone()).collect();
     ui::flush_input();
-    let mut chosen = picker::folders("Folders to share", rows, &shared, index)?;
+    let mut chosen = picker::folders(screen, "Folders to share", rows, &shared, index)?;
     // Sharing a whole home folder or disk is almost never what someone means.
     let mut kept = Vec::new();
     for path in chosen.drain(..) {
-        if is_too_broad(&path)
-            && !Confirm::with_theme(&ui::theme())
-                .with_prompt(format!("{} contains everything in it. Share it anyway?", ui::tilde(&path)))
-                .default(false)
-                .interact()?
-        {
+        if is_too_broad(&path) && !screen.confirm(&format!("{} contains everything in it. Share it anyway?", ui::tilde(&path)), false)? {
             continue;
         }
         kept.push(path);
@@ -164,15 +163,16 @@ fn pick_folders(cfg: &mut Config, found: Vec<discover::Project>, index: std::syn
     cfg.folders.retain(|f| kept.contains(&f.path));
     for path in &kept {
         if let Err(e) = cfg.add_folder(path) {
-            ui::fail(format!("{e:#}"));
+            screen.fail(format!("{e:#}"));
         }
     }
     if cfg.folders.is_empty() {
-        ui::warn("No folders shared yet. Pick at least one.");
-        return pick_folders(cfg, Vec::new(), discover::index_folders());
+        screen.warn("No folders shared yet. Pick at least one.");
+        screen.blank();
+        return pick_folders(screen, cfg, Vec::new(), discover::index_folders());
     }
     for f in &cfg.folders {
-        ui::ok(format!("{}  {}", bold(&f.label), dim(ui::tilde(&f.path))));
+        screen.ok(format!("{}  {}", bold(&f.label), dim(ui::tilde(&f.path))));
     }
     Ok(())
 }
@@ -184,154 +184,128 @@ fn is_too_broad(path: &std::path::Path) -> bool {
 
 // ---- Step 2: edit permissions -----------------------------------------------------------
 
-fn pick_writable(cfg: &mut Config) -> Result<()> {
-    ui::info(dim("Leave everything unchecked to stay read-only. Every edit is backed up and can be undone."));
-    ui::blank();
+fn pick_writable(screen: &mut Screen, cfg: &mut Config) -> Result<()> {
+    screen.info(dim("Leave everything unchecked to stay read-only. Every edit is backed up and can be undone."));
+    screen.blank();
     let items: Vec<String> = cfg.folders.iter().map(|f| format!("{}  {}", f.label, dim(ui::tilde(&f.path)))).collect();
     let defaults: Vec<bool> = cfg.folders.iter().map(|f| f.writable()).collect();
     ui::flush_input();
-    let picked = MultiSelect::with_theme(&ui::theme())
-        .with_prompt(format!("Let your AI edit files in {}", dim("· space to select, enter to confirm")))
-        .items(&items)
-        .defaults(&defaults)
-        .report(false)
-        .interact_opt()?
-        .unwrap_or_default();
+    let picked = screen.multi_select("Let your AI edit files in", &items, &defaults)?;
     for (i, f) in cfg.folders.iter_mut().enumerate() {
         f.access = if picked.contains(&i) { "write".into() } else { "read".into() };
     }
     let writable: Vec<&str> = cfg.folders.iter().filter(|f| f.writable()).map(|f| f.label.as_str()).collect();
     if writable.is_empty() {
-        ui::ok("Everything read-only");
+        screen.ok("Everything read-only");
     } else {
-        ui::ok(format!("Edits allowed in {}", bold(writable.join(", "))));
+        screen.ok(format!("Edits allowed in {}", bold(writable.join(", "))));
     }
     Ok(())
 }
 
 // ---- Step 3: connect --------------------------------------------------------------------
 
-fn install_service_quietly() -> Result<()> {
+fn install_service_quietly(screen: &mut Screen) -> Result<()> {
     if !service::supported() {
-        ui::warn("No background service on this OS yet. Keep `aiva run` open in a terminal.");
+        screen.warn("No background service on this OS yet. Keep `aiva run` open in a terminal.");
         return Ok(());
     }
-    let pb = ui::spinner("Starting the background service…");
-    match service::install(&service::current_exe()?) {
-        Ok(()) => ui::done(pb, format!("Running in the background {}", dim("· starts at login"))),
-        Err(e) => {
-            pb.finish_and_clear();
-            return Err(e);
-        }
-    }
+    let exe = service::current_exe()?;
+    screen.work("Starting the background service…", move || service::install(&exe))?;
+    screen.ok(format!("Running in the background {}", dim("· starts at login")));
     if service::linger_enabled() == Some(false) && !service::enable_linger() {
-        ui::warn("To keep it running after you log out: sudo loginctl enable-linger $USER");
+        screen.warn("To keep it running after you log out: sudo loginctl enable-linger $USER");
     }
     Ok(())
+}
+
+fn connect_lines(cfg: &Config) -> Vec<String> {
+    let key = cfg.key.as_deref().unwrap_or("(none — run aiva setup)");
+    vec![
+        format!("{}    {}", dim("URL"), cyan(cfg.connector_url())),
+        format!("{}  {}", dim("Token"), bold(key)),
+        String::new(),
+        dim("Claude: Settings → Connectors → Add custom connector"),
+        dim("ChatGPT, Cursor and Claude Code work the same way."),
+    ]
 }
 
 pub fn connect_card(cfg: &Config) {
-    let key = cfg.key.as_deref().unwrap_or("(none — run aiva setup)");
-    ui::card(
-        "Add aiva to your AI app",
-        &[
-            format!("{}    {}", dim("URL"), cyan(cfg.connector_url())),
-            format!("{}  {}", dim("Token"), bold(key)),
-            String::new(),
-            dim("Claude: Settings → Connectors → Add custom connector"),
-            dim("ChatGPT, Cursor and Claude Code work the same way."),
-        ],
-    );
+    ui::card("Add aiva to your AI app", &connect_lines(cfg));
 }
 
 /// Walks the person through adding the connector, then waits until an app actually connects.
-fn guide(cfg: &Config) -> Result<()> {
-    ui::blank();
+fn guide(screen: &mut Screen, cfg: &Config) -> Result<()> {
+    screen.blank();
     ui::flush_input();
-    if Confirm::with_theme(&ui::theme())
-        .with_prompt("Open Claude's connector settings in your browser?")
-        .default(true)
-        .interact()?
-    {
+    if screen.confirm("Open Claude's connector settings in your browser?", true)? {
         if ui::open_url(CLAUDE_CONNECTORS) {
-            ui::ok("Opened. Click “Add custom connector”.");
+            screen.ok("Opened. Click “Add custom connector”.");
         } else {
-            ui::info(format!("Open {}", cyan(CLAUDE_CONNECTORS)));
+            screen.info(format!("Open {}", cyan(CLAUDE_CONNECTORS)));
         }
     }
-    ui::blank();
-    ui::info(format!("{} to copy the {} {}", bold("Enter"), bold("URL"), dim("· esc to skip")));
-    if ui::wait_enter() {
+    screen.blank();
+    if screen.press_enter(&format!("{} to copy the {} {}", bold("Enter"), bold("URL"), dim("· esc to skip"))) {
         if ui::copy(&cfg.connector_url()) {
-            ui::ok(format!("URL copied. Paste it as the connector URL, then click {}.", bold("Connect")));
+            screen.ok(format!("URL copied. Paste it as the connector URL, then click {}.", bold("Connect")));
         } else {
-            ui::info(cyan(cfg.connector_url()));
+            screen.info(cyan(cfg.connector_url()));
         }
     }
-    ui::info(format!("{} to copy the {} {}", bold("Enter"), bold("token"), dim("· esc to skip")));
-    if ui::wait_enter() {
+    if screen.press_enter(&format!("{} to copy the {} {}", bold("Enter"), bold("token"), dim("· esc to skip"))) {
         if ui::copy(cfg.key.as_deref().unwrap_or_default()) {
-            ui::ok("Token copied. Paste it on the aiva page that opens, then click Connect.");
+            screen.ok("Token copied. Paste it on the aiva page that opens, then click Connect.");
         } else {
-            ui::info(bold(cfg.key.as_deref().unwrap_or_default()));
+            screen.info(bold(cfg.key.as_deref().unwrap_or_default()));
         }
     }
-    ui::blank();
+    screen.blank();
 
-    let pb = ui::spinner(format!("Waiting for your app to connect… {}", dim("(esc to finish later)")));
-    if wait_for_app(Duration::from_secs(15 * 60)) {
-        ui::done(pb, green(bold("Your AI app is connected.")));
-        ui::blank();
+    let mut log = LogWatch::new();
+    let waiting = format!("Waiting for your app to connect… {}", dim("(esc to finish later)"));
+    if screen.wait_until(&waiting, Duration::from_secs(15 * 60), || log.app_connected()) {
+        screen.ok(green(bold("Your AI app is connected.")));
+        screen.blank();
         let example = cfg.folders.first().map(|f| f.label.as_str()).unwrap_or("my project");
-        ui::info(format!("Try asking: {}", bold(format!("“Use aiva to give me an overview of {example}.”"))));
+        screen.info(format!("Try asking: {}", bold(format!("“Use aiva to give me an overview of {example}.”"))));
     } else {
-        ui::done_warn(pb, "No app connected yet. Finish in your browser any time; `aiva status` shows the state.");
+        screen.warn("No app connected yet. Finish in your browser any time; `aiva status` shows the state.");
     }
-    ui::blank();
-    ui::info(dim("aiva status · aiva folders · aiva token · aiva doctor"));
-    ui::blank();
+    screen.blank();
+    screen.info(dim("aiva status · aiva folders · aiva token · aiva doctor"));
+    screen.blank();
     Ok(())
 }
 
-/// True once the background agent logs that an app asked for its tools; false on timeout or
-/// when the person presses Esc / Enter / q to finish later.
-fn wait_for_app(limit: Duration) -> bool {
-    use std::io::{Read, Seek, SeekFrom};
-    use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
-    let skipped = Arc::new(AtomicBool::new(false));
-    {
-        let skipped = skipped.clone();
-        std::thread::spawn(move || {
-            let term = console::Term::stderr();
-            while let Ok(key) = term.read_key() {
-                if matches!(key, console::Key::Escape | console::Key::Enter | console::Key::Char('q')) {
-                    skipped.store(true, Ordering::Relaxed);
-                    return;
-                }
-            }
-        });
+/// Follows the background agent's log for the line it writes when an app asks for its tools.
+struct LogWatch {
+    path: PathBuf,
+    pos: u64,
+}
+
+impl LogWatch {
+    fn new() -> Self {
+        let path = config::log_path();
+        let pos = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+        Self { path, pos }
     }
-    let path = config::log_path();
-    let mut pos = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-    let started = Instant::now();
-    while started.elapsed() < limit && !skipped.load(Ordering::Relaxed) {
-        std::thread::sleep(Duration::from_millis(400));
-        let Ok(mut f) = std::fs::File::open(&path) else { continue };
+
+    fn app_connected(&mut self) -> bool {
+        use std::io::{Read, Seek, SeekFrom};
+        let Ok(mut f) = std::fs::File::open(&self.path) else { return false };
         let len = f.metadata().map(|m| m.len()).unwrap_or(0);
-        if len < pos {
-            pos = 0;
+        if len < self.pos {
+            self.pos = 0;
         }
-        if len > pos && f.seek(SeekFrom::Start(pos)).is_ok() {
+        if len > self.pos && f.seek(SeekFrom::Start(self.pos)).is_ok() {
             let mut chunk = String::new();
             let _ = f.read_to_string(&mut chunk);
-            pos = len;
-            if chunk.contains(agent::APP_CONNECTED) {
-                return true;
-            }
+            self.pos = len;
+            return chunk.contains(agent::APP_CONNECTED);
         }
+        false
     }
-    false
 }
 
 /// `aiva token`: show the URL and token again, with one-key copy.
