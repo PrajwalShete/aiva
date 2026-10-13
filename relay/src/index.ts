@@ -15,7 +15,7 @@ const MCP_PATH = new RegExp(`^/(${ID_PATTERN})/mcp/?$`);
 const PRM_PATH = new RegExp(`^/\\.well-known/oauth-protected-resource/(${ID_PATTERN})/mcp/?$`);
 
 export default {
-  async fetch(req: Request, env: Env): Promise<Response> {
+  async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(req.url);
     const path = url.pathname;
     const origin = originOf(env, req);
@@ -50,7 +50,7 @@ export default {
       if (m && ASSETS.test(m[2])) {
         const version = m[1] === "latest" ? env.LATEST_VERSION : m[1].replace(/^v/, "");
         if (!/^\d+\.\d+\.\d+([-.][a-z0-9.]+)?$/.test(version)) return text("Unknown version", 404);
-        return redirect(`${env.RELEASES_URL}/download/v${version}/${m[2]}`);
+        return download(`${env.RELEASES_URL}/download/v${version}/${m[2]}`, ctx);
       }
 
       if (path === "/health") return text("ok");
@@ -67,6 +67,28 @@ async function keyFrom(req: Request): Promise<string | null> {
   const auth = req.headers.get("Authorization");
   const key = auth?.startsWith("Bearer ") ? auth.slice(7).trim() : "";
   return looksLikeKey(key) ? idFromKey(key) : null;
+}
+
+/**
+ * Serves a release file through Cloudflare (cached at the edge) instead of redirecting the
+ * installer to GitHub's download servers, whose connections can stall on some networks.
+ */
+async function download(source: string, ctx: ExecutionContext): Promise<Response> {
+  const cache = caches.default;
+  const key = new Request(source);
+  const hit = await cache.match(key);
+  if (hit) return hit;
+  const upstream = await fetch(source, { redirect: "follow", cf: { cacheTtl: 86400, cacheEverything: true } });
+  if (!upstream.ok) return text(`Download not found (${upstream.status}).`, 404);
+  const res = new Response(upstream.body, {
+    headers: {
+      "Content-Type": source.endsWith(".sha256") ? "text/plain; charset=utf-8" : "application/octet-stream",
+      "Cache-Control": "public, max-age=86400, immutable",
+      ...(upstream.headers.get("content-length") ? { "Content-Length": upstream.headers.get("content-length")! } : {}),
+    },
+  });
+  ctx.waitUntil(cache.put(key, res.clone()));
+  return res;
 }
 
 /** Whoever holds a key owns its id; route the WebSocket to that id's AgentHub. */

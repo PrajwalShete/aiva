@@ -53,9 +53,9 @@ tmp="$INSTALL_DIR/.aiva-download.$$"
 trap 'rm -f "$tmp" "$tmp.sha256"' EXIT INT TERM
 
 say "Downloading aiva for $os/$arch..."
-curl -fSL --proto '=https' --tlsv1.2 --progress-bar "$url" -o "$tmp" || fail "download failed: $url"
+curl -fSL --proto '=https' --tlsv1.2 --connect-timeout 15 --max-time 300 --retry 3 --retry-delay 1 --progress-bar "$url" -o "$tmp" || fail "download failed: $url"
 
-if curl -fsSL --proto '=https' "$url.sha256" -o "$tmp.sha256" 2>/dev/null; then
+if curl -fsSL --proto '=https' --connect-timeout 10 --max-time 20 --retry 3 --retry-delay 1 "$url.sha256" -o "$tmp.sha256" 2>/dev/null; then
   expected=$(cut -d ' ' -f 1 < "$tmp.sha256")
   if command -v shasum >/dev/null 2>&1; then actual=$(shasum -a 256 "$tmp" | cut -d ' ' -f 1); else actual=$(sha256sum "$tmp" | cut -d ' ' -f 1); fi
   [ "$expected" = "$actual" ] || fail "checksum mismatch; download is corrupt or tampered with."
