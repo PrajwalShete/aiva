@@ -66,6 +66,7 @@ chmod 755 "$tmp"
 [ "$os" = darwin ] && say "Verifying with macOS (the first launch of a new version can take up to ~30 s)..."
 "$tmp" --version >/dev/null 2>&1 || fail "the downloaded binary doesn't run on this machine."
 mv -f "$tmp" "$INSTALL_DIR/aiva"
+rm -f "$tmp.sha256"
 ln -sf "$INSTALL_DIR/aiva" "$LINK_DIR/aiva"
 say "Installed $("$INSTALL_DIR/aiva" --version) at $INSTALL_DIR/aiva"
 
