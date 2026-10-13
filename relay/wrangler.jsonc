@@ -1,0 +1,19 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "aiva",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "workers_dev": false,
+  "routes": [{ "pattern": "aiva.prajwalshete.com", "custom_domain": true }],
+  "durable_objects": { "bindings": [{ "name": "AGENTS", "class_name": "AgentHub" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AgentHub"] }],
+  // install.sh is a template the Worker fills in with this deployment's URL.
+  "rules": [{ "type": "Text", "globs": ["**/*.sh"], "fallthrough": true }],
+  "vars": {
+    "PUBLIC_ORIGIN": "https://aiva.prajwalshete.com",
+    // Where /dl/<version>/<asset> redirects (GitHub Releases now; R2 later without changing install.sh).
+    "RELEASES_URL": "https://github.com/PrajwalShete/aiva/releases",
+    "LATEST_VERSION": "0.3.0"
+  },
+  "observability": { "enabled": true }
+}

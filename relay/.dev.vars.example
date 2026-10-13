@@ -1,0 +1,3 @@
+PUBLIC_ORIGIN=http://localhost:8787
+# Any long random string; signs OAuth state so nothing needs storing.
+SIGNING_KEY=change-me-to-a-long-random-string
