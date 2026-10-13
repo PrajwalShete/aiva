@@ -132,15 +132,29 @@ fn pick_folders(cfg: &mut Config) -> Result<()> {
     items.push(accent("+ Add a folder by path…"));
     let defaults: Vec<bool> = rows.iter().map(|r| cfg.folders.iter().any(|f| f.path == r.path)).chain([rows.is_empty()]).collect();
 
-    let picked = MultiSelect::with_theme(&ui::theme())
-        .with_prompt(format!("Folders to share {}", dim("· space to select, enter to confirm")))
-        .items(&items)
-        .defaults(&defaults)
-        .max_length(14)
-        .report(false)
-        .interact_opt()?
-        .unwrap_or_default();
-
+    let mut defaults = defaults;
+    let picked = loop {
+        ui::flush_input();
+        let picked = MultiSelect::with_theme(&ui::theme())
+            .with_prompt(format!("Folders to share {}", dim("· space to select, enter to confirm")))
+            .items(&items)
+            .defaults(&defaults)
+            .max_length(14)
+            .report(false)
+            .interact_opt()?;
+        match picked {
+            Some(p) if !p.is_empty() => break p,
+            // Esc, or Enter with nothing selected: explain and ask again instead of moving on.
+            _ => {
+                ui::warn(format!(
+                    "Select at least one folder with {}, or choose {} to type one.",
+                    bold("space"),
+                    accent("+ Add a folder by path…")
+                ));
+                defaults = vec![false; items.len()];
+            }
+        }
+    };
     let add_by_path = picked.contains(&rows.len());
     let chosen: Vec<PathBuf> = picked.iter().filter(|&&i| i < rows.len()).map(|&i| rows[i].path.clone()).collect();
     cfg.folders.retain(|f| chosen.contains(&f.path));
@@ -200,6 +214,7 @@ fn pick_writable(cfg: &mut Config) -> Result<()> {
     ui::blank();
     let items: Vec<String> = cfg.folders.iter().map(|f| format!("{}  {}", f.label, dim(ui::tilde(&f.path)))).collect();
     let defaults: Vec<bool> = cfg.folders.iter().map(|f| f.writable()).collect();
+    ui::flush_input();
     let picked = MultiSelect::with_theme(&ui::theme())
         .with_prompt(format!("Let your AI edit files in {}", dim("· space to select, enter to confirm")))
         .items(&items)
@@ -257,6 +272,7 @@ pub fn connect_card(cfg: &Config) {
 /// Walks the person through adding the connector, then waits until an app actually connects.
 fn guide(cfg: &Config) -> Result<()> {
     ui::blank();
+    ui::flush_input();
     if Confirm::with_theme(&ui::theme())
         .with_prompt("Open Claude's connector settings in your browser?")
         .default(true)

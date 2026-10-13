@@ -63,6 +63,7 @@ fi
 
 chmod 755 "$tmp"
 [ "$os" = darwin ] && xattr -d com.apple.quarantine "$tmp" 2>/dev/null || true
+[ "$os" = darwin ] && say "Verifying with macOS (the first launch of a new version can take up to ~30 s)..."
 "$tmp" --version >/dev/null 2>&1 || fail "the downloaded binary doesn't run on this machine."
 mv -f "$tmp" "$INSTALL_DIR/aiva"
 ln -sf "$INSTALL_DIR/aiva" "$LINK_DIR/aiva"

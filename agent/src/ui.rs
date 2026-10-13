@@ -178,6 +178,15 @@ pub fn open_url(url: &str) -> bool {
     std::process::Command::new(cmd).arg(url).status().is_ok_and(|s| s.success())
 }
 
+/// Discards keys typed before a prompt appeared (e.g. Enter pressed while setup was busy),
+/// so they can't silently confirm the next prompt.
+pub fn flush_input() {
+    #[cfg(unix)]
+    unsafe {
+        libc::tcflush(libc::STDIN_FILENO, libc::TCIFLUSH);
+    }
+}
+
 /// Waits for Enter. Returns false if the user pressed Esc or q.
 pub fn wait_enter() -> bool {
     let term = Term::stderr();
