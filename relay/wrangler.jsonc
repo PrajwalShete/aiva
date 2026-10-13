@@ -13,7 +13,7 @@
     "PUBLIC_ORIGIN": "https://aiva.prajwalshete.com",
     // Where /dl/<version>/<asset> redirects (GitHub Releases now; R2 later without changing install.sh).
     "RELEASES_URL": "https://github.com/PrajwalShete/aiva/releases",
-    "LATEST_VERSION": "0.3.4"
+    "LATEST_VERSION": "0.3.5"
   },
   "observability": { "enabled": true }
 }
