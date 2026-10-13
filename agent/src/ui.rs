@@ -267,6 +267,52 @@ pub fn mark_frame(t: f64) -> Vec<String> {
     lines
 }
 
+/// One clock for every animated mark, so the waves don't jump when one screen hands over to the
+/// next (the home menu to setup).
+fn clock() -> f64 {
+    static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+    START.get_or_init(std::time::Instant::now).elapsed().as_secs_f64()
+}
+
+/// Lines of a hero still at the bottom of the screen (left by the home menu), which the next
+/// `LiveHero` redraws in place instead of printing a second mark.
+static HERO_ON_SCREEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// The hero with a moving mark, redrawn in place while work runs: call `draw` repeatedly with the
+/// right column, then `finish`.
+pub struct LiveHero {
+    drawn: usize,
+}
+
+impl LiveHero {
+    pub fn start() -> Self {
+        let _ = Term::stdout().hide_cursor();
+        Self { drawn: HERO_ON_SCREEN.swap(0, std::sync::atomic::Ordering::Relaxed) }
+    }
+
+    pub fn draw(&mut self, right: &[String]) {
+        let text = hero_text(right, &mark_frame(clock()));
+        let mut out = String::new();
+        if self.drawn > 0 {
+            out.push_str(&format!("\x1b[{}A\r", self.drawn));
+        }
+        out.push_str(&text);
+        out.push_str("\x1b[J");
+        let _ = Term::stdout().write_str(&out);
+        self.drawn = text.matches('\n').count();
+    }
+
+    pub fn finish(self) {
+        let _ = Term::stdout().show_cursor();
+    }
+}
+
+/// A spinner glyph for animated text, in step with the mark.
+pub fn spin() -> String {
+    const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+    style(FRAMES[(clock() * 12.0) as usize % FRAMES.len()]).color256(ACCENT).to_string()
+}
+
 /// The mark on the left and `right` (already styled) on the right, vertically centered.
 /// Stacks them on narrow terminals and drops the mark when there's no room.
 pub fn hero(right: &[String]) {
@@ -342,7 +388,6 @@ pub fn hero_menu(subtitle: &str, items: &[(&str, &str)], start: usize) -> Option
     };
     let _ = term.hide_cursor();
     let raw = RawInput::enable();
-    let started = std::time::Instant::now();
     let mut right = render(current);
     let mut drawn = false;
     let chosen = loop {
@@ -350,7 +395,7 @@ pub fn hero_menu(subtitle: &str, items: &[(&str, &str)], start: usize) -> Option
             let _ = term.move_cursor_up(height(&right));
         }
         right = render(current);
-        let t = if raw.is_some() { started.elapsed().as_secs_f64() } else { 0.3 };
+        let t = if raw.is_some() { clock() } else { 0.3 };
         let _ = term.write_str(&hero_text(&right, &mark_frame(t)));
         let _ = term.clear_to_end_of_screen();
         drawn = true;
@@ -368,6 +413,9 @@ pub fn hero_menu(subtitle: &str, items: &[(&str, &str)], start: usize) -> Option
         }
     };
     drop(raw);
+    if chosen.is_some() {
+        HERO_ON_SCREEN.store(height(&right), std::sync::atomic::Ordering::Relaxed);
+    }
     let _ = term.show_cursor();
     chosen
 }

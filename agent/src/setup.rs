@@ -37,7 +37,11 @@ pub fn run(args: SetupArgs) -> Result<()> {
     }
     let total = 3;
 
-    ui::banner("Setup");
+    let picking = interactive && args.folders.is_empty();
+    let search = if picking { Some(intro()) } else { None };
+    if !picking {
+        ui::banner("Setup");
+    }
     if cfg.key.is_some() && !cfg.folders.is_empty() {
         ui::info(dim("Already set up. Running setup again keeps your URL and token; change anything below."));
     }
@@ -49,8 +53,8 @@ pub fn run(args: SetupArgs) -> Result<()> {
             let folder = cfg.add_folder(path)?;
             ui::ok(format!("{}  {}", bold(&folder.label), dim(ui::tilde(&folder.path))));
         }
-    } else if interactive {
-        pick_folders(&mut cfg)?;
+    } else if let Some((found, index)) = search {
+        pick_folders(&mut cfg, found, index)?;
     } else if cfg.folders.is_empty() {
         bail!("--folder is required when not running in a terminal");
     }
@@ -97,20 +101,39 @@ fn trace(msg: &str) {
 
 // ---- Step 1: folder picker --------------------------------------------------------------
 
-fn pick_folders(cfg: &mut Config) -> Result<()> {
+/// The opening: the mark animates while this computer is searched for projects (and indexed
+/// for the picker's search), for at least one full wave so it never just flickers.
+fn intro() -> (Vec<discover::Project>, std::sync::Arc<discover::FolderIndex>) {
+    let index = discover::index_folders();
+    let mut hero = ui::LiveHero::start();
+    let status = |line: String| {
+        let mut right = ui::brand_lines("Setup");
+        right.push(String::new());
+        right.push(line);
+        right
+    };
+    let started = Instant::now();
+    let found = discover::projects_within(30, Duration::from_secs(4), |n, _| {
+        hero.draw(&status(format!("{} Looking for your projects… {}", ui::spin(), dim(format!("{n} found")))));
+    });
+    trace(&format!("project search: {} found in {} ms", found.len(), started.elapsed().as_millis()));
+    let summary = match found.len() {
+        0 => dim("Ready").to_string(),
+        1 => format!("{} {}", green("✓"), "Found 1 project"),
+        n => format!("{} Found {n} projects", green("✓")),
+    };
+    while started.elapsed() < Duration::from_millis(1800) {
+        hero.draw(&status(summary.clone()));
+        std::thread::sleep(Duration::from_millis(70));
+    }
+    hero.draw(&status(summary));
+    hero.finish();
+    (found, index)
+}
+
+fn pick_folders(cfg: &mut Config, found: Vec<discover::Project>, index: std::sync::Arc<discover::FolderIndex>) -> Result<()> {
     ui::info(dim("Your AI can read only these folders, and never secret files like .env or keys."));
     ui::blank();
-    let index = discover::index_folders();
-    let pb = ui::spinner("Looking for your projects…");
-    let started = Instant::now();
-    let found = discover::projects_within(30, Duration::from_secs(4), |n, at| {
-        let place = if at.as_os_str().is_empty() { String::new() } else { format!(" · {}", ui::tilde(at)) };
-        let place: String = place.chars().take(60).collect();
-        pb.set_message(format!("Looking for your projects… {} {}", bold(n), dim(format!("found{place}"))));
-    });
-    pb.finish_and_clear();
-    trace(&format!("project search: {} found in {} ms", found.len(), started.elapsed().as_millis()));
-
     // Already-shared folders first (checked), then discovered projects, newest first.
     let mut rows: Vec<picker::Row> = cfg
         .folders
@@ -146,7 +169,7 @@ fn pick_folders(cfg: &mut Config) -> Result<()> {
     }
     if cfg.folders.is_empty() {
         ui::warn("No folders shared yet. Pick at least one.");
-        return pick_folders(cfg);
+        return pick_folders(cfg, Vec::new(), discover::index_folders());
     }
     for f in &cfg.folders {
         ui::ok(format!("{}  {}", bold(&f.label), dim(ui::tilde(&f.path))));
