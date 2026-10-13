@@ -57,12 +57,9 @@ fn width() -> usize {
     Term::stdout().size_checked().map(|(_, w)| w as usize).unwrap_or(80).clamp(40, 100)
 }
 
-/// The opening lines of `aiva setup`.
+/// The opening of `aiva setup`: the mark with the brand column beside it.
 pub fn banner(subtitle: &str) {
-    println!();
-    println!("  {}  {}  {}", style("●").color256(ACCENT), style("aiva").bold(), dim(format!("v{}", crate::VERSION)));
-    println!("     {}", dim(subtitle));
-    println!();
+    hero(&brand_lines(subtitle));
 }
 
 /// `── 1 of 3 · Choose folders ──────────`
@@ -192,4 +189,152 @@ pub fn wait_enter() -> bool {
             Err(_) => return false,
         }
     }
+}
+
+// ---- The mark and the home screen ---------------------------------------------------------
+
+const MARK_W: usize = 44;
+const MARK_H: usize = 17;
+
+/// The aiva mark drawn in text: a shaded orange sphere (the brand dot) with three voice waves,
+/// fading from light to dark gray. Computed, so it stays crisp and consistent.
+pub fn mark() -> Vec<String> {
+    const RAMP: &[u8] = b" .:-=+*#%";
+    let (cx, cy, aspect) = (10.5f64, 8.5f64 * 2.05, 2.05f64);
+    let dot_r = 8.4;
+    let waves = [(13.6, 1.9, 252u8), (19.4, 1.9, 246u8), (25.2, 1.9, 240u8)];
+    let limit = 50f64.to_radians();
+    let mut lines = Vec::with_capacity(MARK_H);
+    for y in 0..MARK_H {
+        let mut line = String::new();
+        for x in 0..MARK_W {
+            let (px, py) = (x as f64 + 0.5, (y as f64 + 0.5) * aspect);
+            let (dx, dy) = (px - cx, py - cy);
+            let d = dx.hypot(dy);
+            // Sphere: coverage from the edge, shade from a light at the top-left.
+            let cover = ((dot_r - d) / 1.6 + 0.5).clamp(0.0, 1.0);
+            let mut best = (cover, None::<u8>);
+            if cover > 0.05 {
+                let nx = dx / dot_r;
+                let ny = dy / dot_r;
+                let nz = (1.0 - (nx * nx + ny * ny).min(1.0)).sqrt();
+                let light = ((-0.45 * nx - 0.55 * ny + 0.70 * nz).max(0.0) * 0.85 + 0.15).clamp(0.0, 1.0);
+                let color = match light {
+                    l if l > 0.80 => 223,
+                    l if l > 0.62 => 215,
+                    l if l > 0.45 => 209,
+                    l if l > 0.30 => 202,
+                    _ => 166,
+                };
+                best = (cover * (0.55 + 0.45 * light), Some(color));
+            }
+            let angle = dy.atan2(dx).abs();
+            if dx > 0.0 && angle < limit {
+                let fall = ((limit - angle) / 14f64.to_radians()).clamp(0.0, 1.0);
+                for (radius, thickness, gray) in waves {
+                    let v = (1.0 - (d - radius).abs() / thickness).max(0.0) * fall;
+                    if v > best.0 {
+                        best = (v, Some(gray));
+                    }
+                }
+            }
+            let idx = ((best.0 * (RAMP.len() - 1) as f64) + 0.35) as usize;
+            let ch = RAMP[idx.min(RAMP.len() - 1)] as char;
+            match best.1 {
+                Some(color) if ch != ' ' => line.push_str(&style(ch).color256(color).to_string()),
+                _ => line.push(' '),
+            }
+        }
+        lines.push(line);
+    }
+    lines
+}
+
+/// The mark on the left and `right` (already styled) on the right, vertically centered.
+/// Stacks them on narrow terminals and drops the mark when there's no room.
+pub fn hero(right: &[String]) {
+    let w = Term::stdout().size_checked().map(|(_, w)| w as usize).unwrap_or(80);
+    let mark = mark();
+    let right_w = right.iter().map(|l| measure_text_width(l)).max().unwrap_or(0);
+    println!();
+    if w >= MARK_W + 6 + right_w {
+        let top = (MARK_H.saturating_sub(right.len())) / 2;
+        for (i, art) in mark.iter().enumerate() {
+            let text = i.checked_sub(top).and_then(|j| right.get(j)).map(String::as_str).unwrap_or("");
+            println!("  {art}    {text}");
+        }
+    } else {
+        if w >= MARK_W + 4 {
+            for art in &mark {
+                println!("  {art}");
+            }
+            println!();
+        }
+        for l in right {
+            println!("  {l}");
+        }
+    }
+    println!();
+}
+
+/// Name, tagline, version and divider: the top of the right column.
+pub fn brand_lines(subtitle: &str) -> Vec<String> {
+    vec![
+        style("aiva").color256(ACCENT).bold().to_string(),
+        "Talk to your code from anywhere.".to_string(),
+        String::new(),
+        dim(format!("v{}", crate::VERSION)),
+        String::new(),
+        dim("─".repeat(34)),
+        String::new(),
+        style(subtitle).bold().to_string(),
+    ]
+}
+
+/// An arrow-key menu drawn in place inside the right column of the hero. Returns the chosen index.
+pub fn hero_menu(subtitle: &str, items: &[(&str, &str)], start: usize) -> Option<usize> {
+    let term = Term::stdout();
+    let mut current = start.min(items.len().saturating_sub(1));
+    let render = |current: usize| -> Vec<String> {
+        let mut right = brand_lines(subtitle);
+        right.push(String::new());
+        for (i, (cmd, desc)) in items.iter().enumerate() {
+            let line = if i == current {
+                format!("{} {}  {}", style("›").color256(ACCENT).bold(), style(cmd).color256(ACCENT).bold(), dim(format!("({desc})")))
+            } else if desc.is_empty() {
+                format!("  {}", dim(cmd))
+            } else {
+                format!("  {cmd}")
+            };
+            right.push(line);
+        }
+        right.push(String::new());
+        right.push(dim("↑↓ to move · enter to run · q to quit"));
+        right
+    };
+    let height = |right: &[String]| {
+        let w = term.size_checked().map(|(_, w)| w as usize).unwrap_or(80);
+        let right_w = right.iter().map(|l| measure_text_width(l)).max().unwrap_or(0);
+        if w >= MARK_W + 6 + right_w { MARK_H.max(right.len()) + 2 } else if w >= MARK_W + 4 { MARK_H + 1 + right.len() + 2 } else { right.len() + 2 }
+    };
+    let _ = term.hide_cursor();
+    let mut right = render(current);
+    hero(&right);
+    let chosen = loop {
+        let key = term.read_key();
+        match key {
+            Ok(console::Key::ArrowUp) | Ok(console::Key::Char('k')) => current = current.checked_sub(1).unwrap_or(items.len() - 1),
+            Ok(console::Key::ArrowDown) | Ok(console::Key::Char('j')) | Ok(console::Key::Tab) => current = (current + 1) % items.len(),
+            Ok(console::Key::Enter) => break Some(current),
+            Ok(console::Key::Escape) | Ok(console::Key::Char('q')) | Err(_) => break None,
+            _ => continue,
+        }
+        let lines = height(&right);
+        let _ = term.move_cursor_up(lines);
+        let _ = term.clear_to_end_of_screen();
+        right = render(current);
+        hero(&right);
+    };
+    let _ = term.show_cursor();
+    chosen
 }

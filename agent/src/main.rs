@@ -22,7 +22,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 )]
 struct Cli {
     #[command(subcommand)]
-    command: Command,
+    command: Option<Command>,
 }
 
 #[derive(Subcommand)]
@@ -143,7 +143,15 @@ enum ServiceAction {
 fn main() {
     let _ = rustls::crypto::ring::default_provider().install_default();
     let cli = Cli::parse();
-    let result = match cli.command {
+    let Some(command) = cli.command else {
+        let result = home();
+        if let Err(e) = result {
+            ui::fail(format!("{e:#}"));
+            std::process::exit(1);
+        }
+        return;
+    };
+    let result = match command {
         Command::Setup(args) => setup::run(args),
         Command::Token => setup::token(),
         Command::Rotate { yes } => setup::rotate(yes),
@@ -180,6 +188,36 @@ fn main() {
     if let Err(e) = result {
         ui::fail(format!("{e:#}"));
         std::process::exit(1);
+    }
+}
+
+/// `aiva` with no command: the welcome screen with a "Get started" menu.
+fn home() -> anyhow::Result<()> {
+    use std::io::IsTerminal;
+    if !std::io::stdout().is_terminal() || !std::io::stdin().is_terminal() {
+        <Cli as clap::CommandFactory>::command().print_help()?;
+        return Ok(());
+    }
+    let set_up = config::Config::load().ok().flatten().is_some_and(|c| c.key.is_some());
+    let items: [(&str, &str); 6] = [
+        ("aiva setup", "share folders and connect your AI"),
+        ("aiva status", "is everything connected?"),
+        ("aiva token", "URL and token for your AI app"),
+        ("aiva folders", "what your AI can see"),
+        ("aiva doctor", "find and fix problems"),
+        ("view all commands", ""),
+    ];
+    let Some(choice) = ui::hero_menu("Get started", &items, if set_up { 1 } else { 0 }) else { return Ok(()) };
+    match choice {
+        0 => setup::run(setup::SetupArgs::default()),
+        1 => commands::status(false),
+        2 => setup::token(),
+        3 => commands::folders_list(),
+        4 => commands::doctor(),
+        _ => {
+            <Cli as clap::CommandFactory>::command().print_help()?;
+            Ok(())
+        }
     }
 }
 

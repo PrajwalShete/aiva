@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 
 const CLAUDE_CONNECTORS: &str = "https://claude.ai/settings/connectors";
 
-#[derive(Args)]
+#[derive(Args, Default)]
 pub struct SetupArgs {
     /// Server to use
     #[arg(long, env = "AIVA_SERVER")]
@@ -37,7 +37,7 @@ pub fn run(args: SetupArgs) -> Result<()> {
     }
     let total = 3;
 
-    ui::banner("Talk to your AI about the code on this computer.");
+    ui::banner("Setup");
     if cfg.key.is_some() && !cfg.folders.is_empty() {
         ui::info(dim("Already set up. Running setup again keeps your URL and token; change anything below."));
     }
