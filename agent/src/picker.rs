@@ -136,7 +136,7 @@ fn matches(rows: &[Row], query: &str, index: &FolderIndex) -> Vec<Entry> {
             let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| ui::tilde(&path));
             found.map(entry).unwrap_or(Entry { path, name, kind: "folder".into(), when: String::new() })
         };
-        if let Ok(exact) = std::fs::canonicalize(&path) {
+        if let Ok(exact) = crate::platform::canonicalize(&path) {
             if exact.is_dir() {
                 out.push(folder(exact));
             }
@@ -150,7 +150,7 @@ fn matches(rows: &[Row], query: &str, index: &FolderIndex) -> Vec<Entry> {
                         let name = e.file_name().to_string_lossy().to_lowercase();
                         !name.starts_with('.') && name.starts_with(&prefix)
                     })
-                    .filter_map(|e| std::fs::canonicalize(e.path()).ok())
+                    .filter_map(|e| crate::platform::canonicalize(e.path()).ok())
                     .collect()
             })
             .unwrap_or_default();

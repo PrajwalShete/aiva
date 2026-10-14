@@ -54,7 +54,7 @@ impl Screen {
         if left > 0 {
             let _ = term.write_str(&format!("\x1b[{left}A\r\x1b[J"));
         }
-        guard_signals();
+        crate::platform::guard_terminal(b"\x1b[0m\x1b[?1049l\x1b[?25h");
         let raw = RawInput::enable();
         let _ = term.write_str("\x1b[?1049h\x1b[?25l\x1b[2J");
         screen.live = Some(Live { term, raw, shown: Vec::new(), size: (0, 0) });
@@ -555,30 +555,4 @@ fn plain_wait(label: &str, limit: Duration, mut check: impl FnMut() -> bool) -> 
     }
     pb.finish_and_clear();
     seen
-}
-
-/// If setup is killed (SIGTERM, SIGHUP, SIGINT from outside) while full screen, leave the
-/// alternate screen and restore the terminal mode before dying.
-fn guard_signals() {
-    static SAVED: std::sync::OnceLock<libc::termios> = std::sync::OnceLock::new();
-    extern "C" fn restore(sig: libc::c_int) {
-        const RESET: &[u8] = b"\x1b[0m\x1b[?1049l\x1b[?25h";
-        unsafe {
-            if let Some(t) = SAVED.get() {
-                libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, t);
-            }
-            libc::write(libc::STDOUT_FILENO, RESET.as_ptr() as *const _, RESET.len());
-            libc::signal(sig, libc::SIG_DFL);
-            libc::raise(sig);
-        }
-    }
-    unsafe {
-        let mut t: libc::termios = std::mem::zeroed();
-        if libc::tcgetattr(libc::STDIN_FILENO, &mut t) == 0 {
-            let _ = SAVED.set(t);
-        }
-        for sig in [libc::SIGTERM, libc::SIGHUP, libc::SIGINT, libc::SIGQUIT] {
-            libc::signal(sig, restore as *const () as libc::sighandler_t);
-        }
-    }
 }

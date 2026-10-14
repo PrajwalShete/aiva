@@ -77,7 +77,7 @@ impl Workspace {
             .iter()
             .map(|f| Root {
                 label: f.label.clone(),
-                path: std::fs::canonicalize(&f.path).unwrap_or_else(|_| f.path.clone()),
+                path: crate::platform::canonicalize(&f.path).unwrap_or_else(|_| f.path.clone()),
                 writable: f.writable(),
             })
             .collect();
@@ -182,7 +182,7 @@ impl Workspace {
         let (root, abs) = self.locate(input)?;
         let root_path = &self.roots[root].path;
         // Follow symlinks and make sure the real target is still inside the shared folder.
-        let real = match std::fs::canonicalize(&abs) {
+        let real = match crate::platform::canonicalize(&abs) {
             Ok(real) => real,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 let rel = abs.strip_prefix(root_path).map(slash).unwrap_or_default();
@@ -219,7 +219,7 @@ impl Workspace {
         // The deepest existing ancestor (or the file itself) must really be inside the folder.
         let mut probe = abs.as_path();
         let real = loop {
-            match std::fs::canonicalize(probe) {
+            match crate::platform::canonicalize(probe) {
                 Ok(real) => match abs.strip_prefix(probe) {
                     // Joining an empty path would add a trailing slash.
                     Ok(rest) if !rest.as_os_str().is_empty() => break real.join(rest),

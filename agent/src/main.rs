@@ -3,6 +3,7 @@ mod commands;
 mod config;
 mod discover;
 mod picker;
+mod platform;
 mod protocol;
 mod screen;
 mod service;
@@ -144,6 +145,8 @@ enum ServiceAction {
 
 fn main() {
     let _ = rustls::crypto::ring::default_provider().install_default();
+    platform::init_terminal();
+    platform::remove_replaced_exe();
     let cli = Cli::parse();
     let Some(command) = cli.command else {
         let result = home();

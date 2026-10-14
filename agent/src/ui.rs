@@ -127,47 +127,13 @@ pub fn theme() -> ColorfulTheme {
 pub fn tilde(path: &std::path::Path) -> String {
     if let Some(home) = dirs::home_dir() {
         if let Ok(rest) = path.strip_prefix(&home) {
-            return if rest.as_os_str().is_empty() { "~".into() } else { format!("~/{}", rest.display()) };
+            return if rest.as_os_str().is_empty() { "~".into() } else { format!("~{}{}", std::path::MAIN_SEPARATOR, rest.display()) };
         }
     }
     path.display().to_string()
 }
 
-/// Copies text to the system clipboard. Returns false when no clipboard tool is available.
-pub fn copy(text: &str) -> bool {
-    use std::io::Write;
-    let tools: &[(&str, &[&str])] = if cfg!(target_os = "macos") {
-        &[("pbcopy", &[])]
-    } else {
-        &[("wl-copy", &[]), ("xclip", &["-selection", "clipboard"]), ("xsel", &["--clipboard", "--input"])]
-    };
-    for (cmd, args) in tools {
-        if let Ok(mut child) = std::process::Command::new(cmd).args(*args).stdin(std::process::Stdio::piped()).spawn() {
-            if let Some(mut stdin) = child.stdin.take() {
-                let _ = stdin.write_all(text.as_bytes());
-            }
-            if child.wait().is_ok_and(|s| s.success()) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// Opens a URL in the default browser.
-pub fn open_url(url: &str) -> bool {
-    let cmd = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
-    std::process::Command::new(cmd).arg(url).status().is_ok_and(|s| s.success())
-}
-
-/// Discards keys typed before a prompt appeared (e.g. Enter pressed while setup was busy),
-/// so they can't silently confirm the next prompt.
-pub fn flush_input() {
-    #[cfg(unix)]
-    unsafe {
-        libc::tcflush(libc::STDIN_FILENO, libc::TCIFLUSH);
-    }
-}
+pub use crate::platform::{RawInput, copy, flush_input, open_url};
 
 /// Waits for Enter. Returns false if the user pressed Esc or q.
 pub fn wait_enter() -> bool {
@@ -420,52 +386,4 @@ pub fn hero_menu(subtitle: &str, items: &[(&str, &str)], start: usize) -> Option
     chosen
 }
 
-/// Keeps the terminal out of line mode (no echo, keys arrive at once) so the menu can wait for a
-/// key with a timeout and animate meanwhile. Restores the previous mode when dropped.
-pub struct RawInput(libc::termios);
-
-impl RawInput {
-    pub fn enable() -> Option<Self> {
-        unsafe {
-            if libc::isatty(libc::STDIN_FILENO) != 1 {
-                return None;
-            }
-            let mut saved: libc::termios = std::mem::zeroed();
-            if libc::tcgetattr(libc::STDIN_FILENO, &mut saved) != 0 {
-                return None;
-            }
-            let mut raw = saved;
-            raw.c_lflag &= !(libc::ICANON | libc::ECHO | libc::ISIG);
-            raw.c_cc[libc::VMIN] = 1;
-            raw.c_cc[libc::VTIME] = 0;
-            if libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &raw) != 0 {
-                return None;
-            }
-            Some(Self(saved))
-        }
-    }
-
-    /// True when a key is waiting to be read. Uses select(), because macOS poll() can't wait on
-    /// terminals.
-    pub fn wait(timeout: Duration) -> bool {
-        unsafe {
-            let mut set: libc::fd_set = std::mem::zeroed();
-            libc::FD_ZERO(&mut set);
-            libc::FD_SET(libc::STDIN_FILENO, &mut set);
-            let mut tv = libc::timeval {
-                tv_sec: timeout.as_secs() as _,
-                tv_usec: timeout.subsec_micros() as _,
-            };
-            libc::select(libc::STDIN_FILENO + 1, &mut set, std::ptr::null_mut(), std::ptr::null_mut(), &mut tv) > 0
-        }
-    }
-}
-
-impl Drop for RawInput {
-    fn drop(&mut self) {
-        unsafe {
-            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &self.0);
-        }
-    }
-}
 

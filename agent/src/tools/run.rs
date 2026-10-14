@@ -273,7 +273,7 @@ fn check_paths(words: &[String], cwd: &Path, ctx: &Ctx) -> Result<(), ToolError>
             continue;
         }
         let abs = lexical(cwd, candidate);
-        let Ok(real) = std::fs::canonicalize(&abs) else { continue }; // not a path (a pattern, a script...)
+        let Ok(real) = crate::platform::canonicalize(&abs) else { continue }; // not a path (a pattern, a script...)
         let inside = ctx.ws.roots.iter().any(|r| real.starts_with(&r.path));
         if !inside {
             return Err(ToolError::new(format!("{candidate} is outside the shared folders.")));
@@ -403,7 +403,7 @@ fn check_stage(mut words: Vec<String>, cwd: &Path, ctx: &Ctx) -> Result<Vec<Stri
             }
             // Never let repo config run hooks, pagers or external tools.
             let mut argv = vec!["git".to_string()];
-            for c in ["core.fsmonitor=false", "core.pager=cat", "color.ui=never", "diff.external=", "core.hooksPath=/dev/null"] {
+            for c in ["core.fsmonitor=false", "core.pager=cat", "color.ui=never", "diff.external=", if cfg!(windows) { "core.hooksPath=NUL" } else { "core.hooksPath=/dev/null" }] {
                 argv.push("-c".into());
                 argv.push(c.into());
             }
@@ -420,19 +420,24 @@ fn check_stage(mut words: Vec<String>, cwd: &Path, ctx: &Ctx) -> Result<Vec<Stri
 
 // ---- Running ------------------------------------------------------------------------------
 
+/// PATH for commands, plus the usual install locations a background service doesn't inherit:
+/// Homebrew, /usr/local, Cargo, and on Windows Git's bundled Unix tools (grep, sed, awk...).
 fn search_path() -> String {
-    let mut parts: Vec<String> = std::env::var("PATH").unwrap_or_default().split(':').filter(|s| !s.is_empty()).map(String::from).collect();
+    let mut parts: Vec<PathBuf> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
     let home = dirs::home_dir().unwrap_or_default();
-    for extra in ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"] {
-        if !parts.iter().any(|p| p == extra) {
-            parts.push(extra.into());
+    let mut extras: Vec<PathBuf> = if cfg!(windows) {
+        let program_files = std::env::var_os("ProgramFiles").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(r"C:\Program Files"));
+        vec![program_files.join(r"Git\cmd"), program_files.join(r"Git\usr\bin")]
+    } else {
+        ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"].map(PathBuf::from).to_vec()
+    };
+    extras.push(home.join(".cargo").join("bin"));
+    for extra in extras {
+        if !parts.contains(&extra) {
+            parts.push(extra);
         }
     }
-    let cargo = home.join(".cargo/bin").display().to_string();
-    if !parts.contains(&cargo) {
-        parts.push(cargo);
-    }
-    parts.join(":")
+    crate::platform::join_paths(&parts)
 }
 
 fn execute(stages: Vec<Vec<String>>, cwd: &Path, timeout: Duration) -> Result<String, ToolError> {

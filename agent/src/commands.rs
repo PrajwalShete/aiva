@@ -264,7 +264,7 @@ pub fn doctor() -> Result<()> {
     for f in &cfg.folders {
         let readable = std::fs::read_dir(&f.path);
         let bad = match &readable {
-            Err(e) if e.raw_os_error() == Some(1) => format!(
+            Err(e) if cfg!(target_os = "macos") && e.raw_os_error() == Some(1) => format!(
                 "{}: macOS blocked access. Open System Settings → Privacy & Security → Full Disk Access (or Files and Folders) and allow `aiva`.",
                 ui::tilde(&f.path)
             ),
@@ -346,6 +346,7 @@ pub fn asset_name() -> Result<String> {
     let os = match std::env::consts::OS {
         "macos" => "darwin",
         "linux" => "linux",
+        "windows" => "windows",
         other => bail!("No prebuilt aiva for {other} yet."),
     };
     let arch = match std::env::consts::ARCH {
@@ -353,7 +354,23 @@ pub fn asset_name() -> Result<String> {
         "x86_64" => "x64",
         other => bail!("No prebuilt aiva for {other} yet."),
     };
-    Ok(format!("aiva-{os}-{arch}"))
+    Ok(format!("aiva-{os}-{arch}{}", std::env::consts::EXE_SUFFIX))
+}
+
+/// Downloads a release file next to `exe` (same folder, so it can be renamed into place).
+fn download(url: &str, exe: &std::path::Path, name: &str) -> Result<PathBuf> {
+    // Windows only runs files ending in .exe.
+    let tmp = exe.with_file_name(format!("{name}.download{}", std::env::consts::EXE_SUFFIX));
+    let mut resp = http().get(url).call()?;
+    let mut file = std::fs::File::create(&tmp)?;
+    std::io::copy(&mut resp.body_mut().as_reader(), &mut file)?;
+    drop(file);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
+    }
+    Ok(tmp)
 }
 
 pub fn update() -> Result<()> {
@@ -367,23 +384,25 @@ pub fn update() -> Result<()> {
     }
     ui::info(format!("Updating {} → {latest}...", crate::VERSION));
     let exe = service::current_exe()?;
-    let tmp = exe.with_extension("download");
-    let mut resp = http().get(&format!("{server}/dl/{}", asset_name()?)).call()?;
-    let mut file = std::fs::File::create(&tmp)?;
-    std::io::copy(&mut resp.body_mut().as_reader(), &mut file)?;
-    drop(file);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o755))?;
-    }
+    let asset = asset_name()?;
+    let tmp = download(&format!("{server}/dl/{asset}"), &exe, "aiva")?;
     // Make sure the download actually runs before replacing the working binary.
     let check = std::process::Command::new(&tmp).arg("--version").output();
     if !check.as_ref().is_ok_and(|o| o.status.success()) {
         let _ = std::fs::remove_file(&tmp);
         bail!("The downloaded binary didn't run; kept the current version.");
     }
-    std::fs::rename(&tmp, &exe)?;
+    // On Windows the background launcher ships alongside (see src/bin/aivaw.rs).
+    let launcher = if cfg!(windows) {
+        let name = asset.replacen("aiva-", "aivaw-", 1);
+        Some(download(&format!("{server}/dl/{name}"), &exe, "aivaw")?)
+    } else {
+        None
+    };
+    crate::platform::replace_running_exe(&tmp, &exe)?;
+    if let Some(new) = launcher {
+        crate::platform::replace_running_exe(&new, &exe.with_file_name("aivaw.exe"))?;
+    }
     ui::ok(format!("Updated to {}", String::from_utf8_lossy(&check.unwrap().stdout).trim()));
     if service::restart_if_running()? {
         ui::ok("Restarted the background service");
@@ -412,11 +431,15 @@ pub fn uninstall(keep_binary: bool, yes: bool) -> Result<()> {
                 let _ = if p.is_dir() { std::fs::remove_dir_all(&p) } else { std::fs::remove_file(&p) };
             }
         } else {
-            std::fs::remove_dir_all(&home)?;
+            crate::platform::remove_install_dir(&home)?;
         }
         ui::ok(format!("Removed {}", ui::tilde(&home)));
     }
-    if !keep_binary {
+    if !keep_binary && cfg!(windows) {
+        crate::platform::remove_from_user_path(&home.join("bin"));
+        ui::ok("Removed aiva from your PATH");
+    }
+    if !keep_binary && cfg!(unix) {
         if let Some(link) = dirs::home_dir().map(|h| h.join(".local/bin/aiva")) {
             if link.symlink_metadata().is_ok() {
                 std::fs::remove_file(&link)?;

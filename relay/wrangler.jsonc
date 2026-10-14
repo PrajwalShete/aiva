@@ -8,7 +8,7 @@
   "durable_objects": { "bindings": [{ "name": "AGENTS", "class_name": "AgentHub" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["AgentHub"] }],
   // install.sh is a template the Worker fills in with this deployment's URL.
-  "rules": [{ "type": "Text", "globs": ["**/*.sh"], "fallthrough": true }],
+  "rules": [{ "type": "Text", "globs": ["**/*.sh", "**/*.ps1"], "fallthrough": true }],
   "vars": {
     "PUBLIC_ORIGIN": "https://aiva.prajwalshete.com",
     // Where /dl/<version>/<asset> redirects (GitHub Releases now; R2 later without changing install.sh).

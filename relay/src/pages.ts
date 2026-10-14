@@ -64,6 +64,9 @@ label.k button:hover{color:var(--ink)}
 .cmd span{font:14px/1.4 var(--mono);overflow-x:auto;white-space:nowrap;scrollbar-width:none}
 .cmd span::before{content:"$ ";color:var(--ink-3)}
 .cmd .btn{padding:11px 16px;font-size:14px}
+.cmd.ps span::before{content:"> "}
+.cmd:has(+ .os){margin-bottom:28px}
+.os{font:500 11px/1 var(--mono);letter-spacing:.12em;text-transform:uppercase;color:var(--ink-3);margin:0 0 10px}
 ol.steps{list-style:none;margin:0;padding:0;border-top:1px solid var(--rule)}
 ol.steps li{display:grid;grid-template-columns:56px 1fr;gap:8px;padding:20px 0;border-bottom:1px solid var(--rule)}
 ol.steps li::before{content:counter(s,decimal-leading-zero);counter-increment:s;font:12px/1.9 var(--mono);color:var(--ink-3)}
@@ -105,12 +108,16 @@ document.querySelectorAll("[data-copy]").forEach(function(b){b.addEventListener(
 
 export function home(origin: string): Response {
   const install = `curl -fsSL ${origin}/install.sh | sh`;
+  const installWindows = `irm ${origin}/install.ps1 | iex`;
   return respond(
     "aiva — talk to your code from anywhere",
     `<p class="eyebrow">MCP connector for your own computer</p>
 <h1>Talk to your code<br>from <em>anywhere</em>.</h1>
 <p class="lede">aiva lets Claude, ChatGPT and other AI apps read the folders you choose on your computer, and edit them if you allow it. Ask about your project from your phone, out loud, while you're away from your desk.</p>
+<p class="os">macOS and Linux · Terminal</p>
 <div class="cmd"><span>${esc(install)}</span><button class="btn" data-copy="${esc(install)}">Copy</button></div>
+<p class="os">Windows · PowerShell</p>
+<div class="cmd ps"><span>${esc(installWindows)}</span><button class="btn" data-copy="${esc(installWindows)}">Copy</button></div>
 <ol class="steps">
 <li><div><b>Install and pick folders.</b><p>The installer starts <code>aiva setup</code>, which prints a URL and a token.</p></div></li>
 <li><div><b>Add the URL as a connector.</b><p>In Claude: Settings → Connectors → Add custom connector. ChatGPT, Cursor and Claude Code work the same way.</p></div></li>

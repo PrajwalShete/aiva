@@ -7,10 +7,11 @@ import * as oauth from "./oauth";
 import * as pages from "./pages";
 import { ID_PATTERN, idFromKey, json, looksLikeKey, origin as originOf, preflight, redirect, text } from "./util";
 import installScript from "./install.sh";
+import installPowerShell from "./install.ps1";
 
 export { AgentHub } from "./hub";
 
-const ASSETS = /^aiva-(darwin|linux)-(arm64|x64)(\.sha256)?$/;
+const ASSETS = /^(aiva-(darwin|linux)-(arm64|x64)|aivaw?-windows-(arm64|x64)\.exe)(\.sha256)?$/;
 const MCP_PATH = new RegExp(`^/(${ID_PATTERN})/mcp/?$`);
 const PRM_PATH = new RegExp(`^/\\.well-known/oauth-protected-resource/(${ID_PATTERN})/mcp/?$`);
 
@@ -45,6 +46,10 @@ export default {
       if (path === "/install.sh") {
         const script = installScript.replaceAll("__AIVA_SERVER__", origin).replaceAll("__AIVA_VERSION__", env.LATEST_VERSION);
         return text(script, 200, { "Content-Type": "text/x-shellscript; charset=utf-8", "Cache-Control": "public, max-age=300" });
+      }
+      if (path === "/install.ps1") {
+        const script = installPowerShell.replaceAll("__AIVA_SERVER__", origin).replaceAll("__AIVA_VERSION__", env.LATEST_VERSION);
+        return text(script, 200, { "Content-Type": "text/plain; charset=utf-8", "Cache-Control": "public, max-age=300" });
       }
       m = path.match(/^\/dl\/([^/]+)\/([^/]+)$/);
       if (m && ASSETS.test(m[2])) {

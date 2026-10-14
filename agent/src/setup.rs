@@ -178,7 +178,7 @@ fn pick_folders(screen: &mut Screen, cfg: &mut Config, found: Vec<discover::Proj
 }
 
 fn is_too_broad(path: &std::path::Path) -> bool {
-    let canonical = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let canonical = crate::platform::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     canonical.parent().is_none() || dirs::home_dir().is_some_and(|h| canonical == h)
 }
 

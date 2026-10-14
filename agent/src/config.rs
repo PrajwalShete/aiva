@@ -127,7 +127,7 @@ impl Config {
     /// Finds a shared folder by label or path.
     pub fn folder_mut(&mut self, target: &str) -> Option<&mut Folder> {
         let as_path = expand_tilde(target);
-        let canonical = std::fs::canonicalize(&as_path).unwrap_or(as_path);
+        let canonical = crate::platform::canonicalize(&as_path).unwrap_or(as_path);
         self.folders.iter_mut().find(|f| f.label.eq_ignore_ascii_case(target) || f.path == canonical)
     }
 
@@ -155,7 +155,7 @@ impl Config {
     /// Removes a folder by label or path. Returns the removed folder.
     pub fn remove_folder(&mut self, target: &str) -> Option<Folder> {
         let as_path = expand_tilde(target);
-        let canonical = std::fs::canonicalize(&as_path).unwrap_or(as_path);
+        let canonical = crate::platform::canonicalize(&as_path).unwrap_or(as_path);
         let i = self
             .folders
             .iter()
@@ -169,7 +169,7 @@ pub fn expand_tilde(input: &str) -> PathBuf {
     if input == "~" {
         return dirs::home_dir().unwrap_or_default();
     }
-    if let Some(rest) = input.strip_prefix("~/") {
+    if let Some(rest) = input.strip_prefix("~/").or_else(|| input.strip_prefix("~\\")) {
         return dirs::home_dir().unwrap_or_default().join(rest);
     }
     PathBuf::from(input)
@@ -179,7 +179,7 @@ pub fn expand_tilde(input: &str) -> PathBuf {
 pub fn canonical_dir(path: &Path) -> Result<PathBuf> {
     let expanded = expand_tilde(&path.to_string_lossy());
     let abs = if expanded.is_absolute() { expanded } else { std::env::current_dir()?.join(expanded) };
-    let canonical = std::fs::canonicalize(&abs).with_context(|| format!("{} doesn't exist", abs.display()))?;
+    let canonical = crate::platform::canonicalize(&abs).with_context(|| format!("{} doesn't exist", abs.display()))?;
     if !canonical.is_dir() {
         bail!("{} is not a folder", canonical.display());
     }
@@ -188,9 +188,8 @@ pub fn canonical_dir(path: &Path) -> Result<PathBuf> {
 
 /// A new random key: `aiva_` + 32 random bytes, base64url.
 pub fn generate_key() -> Result<String> {
-    use std::io::Read;
     let mut bytes = [0u8; 32];
-    std::fs::File::open("/dev/urandom").and_then(|mut f| f.read_exact(&mut bytes)).context("reading random bytes")?;
+    crate::platform::random_bytes(&mut bytes)?;
     const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_";
     let mut out = String::from("aiva_");
     for chunk in bytes.chunks(3) {

@@ -1,5 +1,6 @@
-//! Background service: a launchd LaunchAgent on macOS, a systemd user unit on Linux.
-//! Both run `aiva run`, start at login, and restart the agent if it exits.
+//! Background service: a launchd LaunchAgent on macOS, a systemd user unit on Linux, and on
+//! Windows a per-user Run entry that starts `aivaw.exe` (see src/bin/aivaw.rs). All of them run
+//! `aiva run`, start at login, and restart the agent if it exits. None needs admin rights.
 
 use crate::config;
 use anyhow::{Context, Result, bail};
@@ -24,13 +25,13 @@ impl std::fmt::Display for State {
 }
 
 pub fn supported() -> bool {
-    cfg!(any(target_os = "macos", target_os = "linux"))
+    cfg!(any(target_os = "macos", target_os = "linux", windows))
 }
 
 /// The stable path the service should launch: the installed binary, not a temporary copy.
 pub fn current_exe() -> Result<PathBuf> {
     let exe = std::env::current_exe().context("finding the aiva binary")?;
-    Ok(std::fs::canonicalize(&exe).unwrap_or(exe))
+    Ok(crate::platform::canonicalize(&exe).unwrap_or(exe))
 }
 
 fn run(cmd: &str, args: &[&str]) -> Result<std::process::Output> {
@@ -253,7 +254,142 @@ pub fn enable_linger() -> bool {
 #[cfg(target_os = "linux")]
 pub use imp::{enable_linger, linger_enabled};
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(windows)]
+mod imp {
+    use super::*;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{EVENT_MODIFY_STATE, OpenEventW, OpenMutexW, SYNCHRONIZATION_SYNCHRONIZE, SetEvent};
+
+    const RUN_KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+    const VALUE: &str = "aiva";
+    /// Shared with src/bin/aivaw.rs.
+    const MUTEX: &str = "Local\\aiva-agent";
+    const STOP_EVENT: &str = "Local\\aiva-agent-stop";
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+
+    fn wide(s: &str) -> Vec<u16> {
+        s.encode_utf16().chain(Some(0)).collect()
+    }
+
+    fn launcher(exe: &Path) -> PathBuf {
+        exe.with_file_name("aivaw.exe")
+    }
+
+    /// The Run entry's command line, if installed.
+    fn entry() -> Option<String> {
+        let out = run("reg.exe", &["query", RUN_KEY, "/v", VALUE]).ok()?;
+        if !out.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&out.stdout);
+        let line = text.lines().find(|l| l.trim_start().starts_with(VALUE))?;
+        Some(line.split("REG_SZ").nth(1)?.trim().to_string())
+    }
+
+    fn running() -> bool {
+        unsafe {
+            let h = OpenMutexW(SYNCHRONIZATION_SYNCHRONIZE, 0, wide(MUTEX).as_ptr());
+            if h.is_null() {
+                return false;
+            }
+            CloseHandle(h);
+            true
+        }
+    }
+
+    fn command_line(exe: &Path) -> String {
+        let mut cmd = format!("\"{}\"", launcher(exe).display());
+        if let Ok(home) = std::env::var("AIVA_HOME") {
+            cmd.push_str(&format!(" --home \"{home}\""));
+        }
+        cmd
+    }
+
+    pub fn install(exe: &Path) -> Result<()> {
+        if !launcher(exe).exists() {
+            bail!("{} is missing. Reinstall aiva.", launcher(exe).display());
+        }
+        std::fs::create_dir_all(config::log_path().parent().unwrap())?;
+        run_ok("reg.exe", &["add", RUN_KEY, "/v", VALUE, "/t", "REG_SZ", "/d", &command_line(exe), "/f"])?;
+        stop()?;
+        start()
+    }
+
+    pub fn uninstall() -> Result<()> {
+        stop()?;
+        if entry().is_some() {
+            run_ok("reg.exe", &["delete", RUN_KEY, "/v", VALUE, "/f"])?;
+        }
+        Ok(())
+    }
+
+    pub fn start() -> Result<()> {
+        if entry().is_none() {
+            bail!("The service isn't installed. Run `aiva service install`.");
+        }
+        if running() {
+            return Ok(());
+        }
+        use std::os::windows::process::CommandExt;
+        let exe = current_exe()?;
+        let mut cmd = Command::new(launcher(&exe));
+        if let Ok(home) = std::env::var("AIVA_HOME") {
+            cmd.args(["--home", &home]);
+        }
+        cmd.creation_flags(DETACHED_PROCESS)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .with_context(|| format!("starting {}", launcher(&exe).display()))?;
+        for _ in 0..50 {
+            if running() {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        bail!("The background launcher didn't start. See `aiva logs`.")
+    }
+
+    pub fn stop() -> Result<()> {
+        unsafe {
+            let h = OpenEventW(EVENT_MODIFY_STATE, 0, wide(STOP_EVENT).as_ptr());
+            if h.is_null() {
+                return Ok(());
+            }
+            SetEvent(h);
+            CloseHandle(h);
+        }
+        for _ in 0..50 {
+            if !running() {
+                return Ok(());
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        bail!("The background launcher didn't stop.")
+    }
+
+    pub fn restart() -> Result<()> {
+        if entry().is_none() {
+            bail!("The service isn't installed. Run `aiva service install`.");
+        }
+        stop()?;
+        start()
+    }
+
+    pub fn state() -> Result<State> {
+        if entry().is_none() {
+            return Ok(State::NotInstalled);
+        }
+        Ok(if running() { State::Running { pid: None } } else { State::Stopped })
+    }
+
+    pub fn describe() -> String {
+        format!("startup entry {RUN_KEY}\\{VALUE} (runs aivaw.exe)")
+    }
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 mod imp {
     use super::*;
 

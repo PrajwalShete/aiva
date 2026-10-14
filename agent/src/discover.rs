@@ -62,15 +62,9 @@ fn modified(dir: &Path) -> SystemTime {
         .unwrap_or(SystemTime::UNIX_EPOCH)
 }
 
-/// iCloud "optimized storage" placeholders: reading them would start a download.
-#[cfg(target_os = "macos")]
+/// Cloud placeholders (iCloud, OneDrive): reading into them would start a download.
 fn dataless(meta: &std::fs::Metadata) -> bool {
-    use std::os::macos::fs::MetadataExt;
-    meta.st_flags() & 0x4000_0000 != 0 // SF_DATALESS
-}
-#[cfg(not(target_os = "macos"))]
-fn dataless(_: &std::fs::Metadata) -> bool {
-    false
+    crate::platform::is_cloud_placeholder(meta)
 }
 
 /// Live progress for the picker: how many projects so far, and the folder being looked at.
@@ -140,7 +134,7 @@ fn projects_with(limit: usize, progress: &Progress) -> Vec<Project> {
             if started.elapsed() > budget || found.len() > 400 {
                 break;
             }
-            let Ok(canonical) = std::fs::canonicalize(&dir) else { continue };
+            let Ok(canonical) = crate::platform::canonicalize(&dir) else { continue };
             *progress.current.lock().unwrap() = canonical.clone();
             if !seen.insert(canonical.clone()) {
                 continue;

@@ -1,0 +1,41 @@
+# Tests the agent on every push: unit tests on macOS, Linux and Windows (x64 and ARM64), plus an
+# end-to-end smoke test (tests/smoke.mjs) against the live relay. On Windows the smoke test also
+# installs, stops, starts and removes the background service (aivaw.exe + the Run entry).
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { runner: ubuntu-latest, service: "" }
+          - { runner: macos-latest, service: "" }
+          - { runner: windows-latest, service: "--service" }
+          - { runner: windows-11-arm, service: "--service" }
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+        working-directory: agent
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Clang for ring (Windows ARM64)
+        if: matrix.runner == 'windows-11-arm'
+        run: command -v clang || { choco install llvm -y --no-progress && echo "C:\Program Files\LLVM\bin" >> "$GITHUB_PATH"; }
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - name: Unit tests
+        run: cargo test --release --locked
+      - name: Build
+        run: cargo build --release --locked
+      - name: Smoke test
+        env:
+          CI: "1"
+        run: node tests/smoke.mjs "target/release/aiva$( [ "$RUNNER_OS" = Windows ] && echo .exe )" ${{ matrix.service }}
