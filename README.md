@@ -11,7 +11,7 @@ aiva gives Claude, ChatGPT and other MCP apps careful access to the folders you 
 curl -fsSL https://aiva.prajwalshete.com/install.sh | sh        # macOS, Linux
 ```
 ```powershell
-irm https://aiva.prajwalshete.com/install.ps1 | iex              # Windows (PowerShell)
+powershell -ExecutionPolicy Bypass -c "irm https://aiva.prajwalshete.com/install.ps1 | iex"   # Windows
 ```
 
 [How it works](#how-it-works) · [Tools](#what-your-ai-can-do) · [Safety](#safety-model) · [CLI](#cli) · [Self-hosting](#run-your-own-relay) · [Development](#development)
@@ -37,13 +37,13 @@ Coding agents are great at your desk. aiva is for everywhere else: on a walk, in
 curl -fsSL https://aiva.prajwalshete.com/install.sh | sh
 ```
 
-On Windows 10 or 11 (x64 or ARM64), in PowerShell:
+On Windows 10 or 11 (x64 or ARM64), in PowerShell or Command Prompt:
 
 ```powershell
-irm https://aiva.prajwalshete.com/install.ps1 | iex
+powershell -ExecutionPolicy Bypass -c "irm https://aiva.prajwalshete.com/install.ps1 | iex"
 ```
 
-From `cmd.exe`, use `powershell -ExecutionPolicy Bypass -c "irm https://aiva.prajwalshete.com/install.ps1 | iex"`. Neither installer needs admin rights.
+Already in PowerShell, `irm https://aiva.prajwalshete.com/install.ps1 | iex` is enough. Neither installer needs admin rights.
 
 The installer starts `aiva setup`. Pick the folders to share. Setup installs a background service and prints two things:
 

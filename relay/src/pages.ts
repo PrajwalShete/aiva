@@ -108,7 +108,8 @@ document.querySelectorAll("[data-copy]").forEach(function(b){b.addEventListener(
 
 export function home(origin: string): Response {
   const install = `curl -fsSL ${origin}/install.sh | sh`;
-  const installWindows = `irm ${origin}/install.ps1 | iex`;
+  // Works in both PowerShell and Command Prompt.
+  const installWindows = `powershell -ExecutionPolicy Bypass -c "irm ${origin}/install.ps1 | iex"`;
   return respond(
     "aiva — talk to your code from anywhere",
     `<p class="eyebrow">MCP connector for your own computer</p>
@@ -116,7 +117,7 @@ export function home(origin: string): Response {
 <p class="lede">aiva lets Claude, ChatGPT and other AI apps read the folders you choose on your computer, and edit them if you allow it. Ask about your project from your phone, out loud, while you're away from your desk.</p>
 <p class="os">macOS and Linux · Terminal</p>
 <div class="cmd"><span>${esc(install)}</span><button class="btn" data-copy="${esc(install)}">Copy</button></div>
-<p class="os">Windows · PowerShell</p>
+<p class="os">Windows · PowerShell or Command Prompt</p>
 <div class="cmd ps"><span>${esc(installWindows)}</span><button class="btn" data-copy="${esc(installWindows)}">Copy</button></div>
 <ol class="steps">
 <li><div><b>Install and pick folders.</b><p>The installer starts <code>aiva setup</code>, which prints a URL and a token.</p></div></li>
