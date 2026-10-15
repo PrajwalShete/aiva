@@ -331,6 +331,16 @@ mod imp {
             return Ok(());
         }
         use std::os::windows::process::CommandExt;
+        // Windows passes every inheritable handle to a child. Our own stdin/stdout/stderr
+        // would then stay open in the long-running launcher, so whoever ran this command
+        // (a script waiting for our output) would wait forever.
+        unsafe {
+            use windows_sys::Win32::Foundation::{HANDLE_FLAG_INHERIT, SetHandleInformation};
+            use windows_sys::Win32::System::Console::{GetStdHandle, STD_ERROR_HANDLE, STD_INPUT_HANDLE, STD_OUTPUT_HANDLE};
+            for which in [STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE] {
+                SetHandleInformation(GetStdHandle(which), HANDLE_FLAG_INHERIT, 0);
+            }
+        }
         let exe = current_exe()?;
         let mut cmd = Command::new(launcher(&exe));
         if let Ok(home) = std::env::var("AIVA_HOME") {

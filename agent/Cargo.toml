@@ -1,6 +1,6 @@
 [package]
 name = "aiva"
-version = "0.3.8"
+version = "0.4.0"
 edition = "2024"
 license = "MIT"
 description = "Talk to your AI about the code on your computer, from anywhere."

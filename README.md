@@ -8,7 +8,10 @@ Ask Claude about your project from your phone, out loud, while you're away from 
 aiva gives Claude, ChatGPT and other MCP apps careful access to the folders you choose.
 
 ```bash
-curl -fsSL https://aiva.prajwalshete.com/install.sh | sh
+curl -fsSL https://aiva.prajwalshete.com/install.sh | sh        # macOS, Linux
+```
+```powershell
+irm https://aiva.prajwalshete.com/install.ps1 | iex              # Windows (PowerShell)
 ```
 
 [How it works](#how-it-works) · [Tools](#what-your-ai-can-do) · [Safety](#safety-model) · [CLI](#cli) · [Self-hosting](#run-your-own-relay) · [Development](#development)
@@ -28,11 +31,19 @@ Coding agents are great at your desk. aiva is for everywhere else: on a walk, in
 
 ## Quick start
 
-**1. Install** (macOS or Linux):
+**1. Install.** On macOS or Linux, in Terminal:
 
 ```bash
 curl -fsSL https://aiva.prajwalshete.com/install.sh | sh
 ```
+
+On Windows 10 or 11 (x64 or ARM64), in PowerShell:
+
+```powershell
+irm https://aiva.prajwalshete.com/install.ps1 | iex
+```
+
+From `cmd.exe`, use `powershell -ExecutionPolicy Bypass -c "irm https://aiva.prajwalshete.com/install.ps1 | iex"`. Neither installer needs admin rights.
 
 The installer starts `aiva setup`. Pick the folders to share. Setup installs a background service and prints two things:
 
@@ -166,7 +177,7 @@ aiva call <tool> '<json>'         run a tool locally, exactly as the AI would
 aiva url | config | update | uninstall
 ```
 
-The background service is a launchd agent on macOS and a systemd user unit on Linux. It starts at login and restarts if it stops. Folder changes take effect immediately.
+The background service is a launchd agent on macOS, a systemd user unit on Linux, and on Windows a per-user startup entry (it shows up in Task Manager → Startup apps) that runs `aivaw.exe`, a small launcher without a window. It starts at login and restarts the agent if it stops. Folder changes take effect immediately. Everything lives in `~/.aiva` (`%USERPROFILE%\.aiva` on Windows).
 
 ## Run your own relay
 
@@ -187,12 +198,17 @@ Point the agent at it with `aiva setup --server https://your-domain` (or `AIVA_S
 ```
 agent/   Rust CLI and agent. Tools live in agent/src/tools/, one file per family
 relay/   Cloudflare Worker: stateless OAuth, MCP endpoint, AgentHub Durable Object
-.github/workflows/release.yml   builds macOS and Linux binaries for version tags
+agent/src/platform.rs           everything OS-specific (terminal, paths, clipboard, updating the binary)
+agent/src/service.rs            background service: launchd, systemd, Windows Run entry + aivaw.exe
+agent/tests/smoke.mjs           end-to-end test against a relay: OAuth, MCP tools, service lifecycle
+.github/workflows/ci.yml        unit + smoke tests on macOS, Linux, Windows x64 and Windows ARM64
+.github/workflows/release.yml   builds every platform's binaries for version tags
 ```
 
 ```bash
 # agent
 cd agent && cargo build && cargo test
+node tests/smoke.mjs target/debug/aiva        # end to end against the live relay
 AIVA_HOME=/tmp/aiva-dev ./target/debug/aiva folders add ~/code/myapp
 AIVA_HOME=/tmp/aiva-dev ./target/debug/aiva call project_overview '{}'
 
@@ -204,7 +220,9 @@ AIVA_SERVER=http://127.0.0.1:8787 AIVA_HOME=/tmp/aiva-dev ../agent/target/debug/
 
 **Adding a tool:** implement the `Tool` trait in `agent/src/tools/` and add it to `registry()` in `tools/mod.rs`. The relay needs no changes; it asks the agent for its tool list live. Set `read_only()` to `false` for anything that changes files, and it will only be offered for folders that allow edits.
 
-**Releasing:** push a tag like `v0.3.0`. The workflow builds `aiva-darwin-arm64`, `aiva-darwin-x64`, `aiva-linux-x64` and `aiva-linux-arm64` with checksums, which `install.sh` downloads through `/dl/<version>/<asset>`.
+**Releasing:** push a tag like `v0.3.0`. The workflow builds `aiva-darwin-arm64`, `aiva-darwin-x64`, `aiva-linux-x64`, `aiva-linux-arm64`, and for Windows `aiva-windows-{x64,arm64}.exe` plus `aivaw-windows-{x64,arm64}.exe`, all with checksums. `install.sh` and `install.ps1` download them through `/dl/<version>/<asset>`.
+
+**Supporting another OS:** fill in `agent/src/platform.rs` and the service in `agent/src/service.rs`, add a build to both workflows, and an installer in `relay/src/`.
 
 ## Roadmap
 
@@ -213,4 +231,4 @@ AIVA_SERVER=http://127.0.0.1:8787 AIVA_HOME=/tmp/aiva-dev ../agent/target/debug/
 - Batch `find_symbol`, and `read_files` by symbol name
 - Sandboxed `shell` (tests, builds), opt-in per folder
 - Move, rename and delete-to-trash tools
-- Windows service, signed binaries, Homebrew
+- Signed binaries (Apple Developer ID, Windows code signing), Homebrew and winget

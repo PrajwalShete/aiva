@@ -45,7 +45,7 @@ writeFileSync(join(project, "src", "hello.ts"), "export function greeting() {\n 
 writeFileSync(join(project, ".env"), "SECRET=never-shown\n");
 const home = mkdtempSync(join(tmpdir(), "aiva-smoke-home-"));
 const env = { ...process.env, AIVA_HOME: home, AIVA_SERVER: SERVER };
-const aiva = (...a) => execFileSync(AIVA, a, { env, stdio: ["ignore", "pipe", "pipe"] }).toString();
+const aiva = (...a) => execFileSync(AIVA, a, { env, stdio: ["ignore", "pipe", "pipe"], timeout: 60_000 }).toString();
 let agent = null;
 function cleanup() {
   try {

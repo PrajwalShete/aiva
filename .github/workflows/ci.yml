@@ -18,6 +18,7 @@ jobs:
           - { runner: windows-latest, service: "--service" }
           - { runner: windows-11-arm, service: "--service" }
     runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     defaults:
       run:
         shell: bash
@@ -36,6 +37,7 @@ jobs:
       - name: Build
         run: cargo build --release --locked
       - name: Smoke test
+        timeout-minutes: 10
         env:
           CI: "1"
         run: node tests/smoke.mjs "target/release/aiva$( [ "$RUNNER_OS" = Windows ] && echo .exe )" ${{ matrix.service }}

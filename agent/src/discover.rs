@@ -29,6 +29,7 @@ const MARKERS: &[(&str, &str)] = &[
 ];
 
 const SKIP: &[&str] = &[
+    "AppData", "Application Data", "Local Settings", // Windows profile internals
     "node_modules", "Library", "Applications", "Movies", "Music", "Pictures", "Public", "target", "dist", "build", "vendor",
     "venv", "Pods", "DerivedData", "Downloads", "go", "snap",
 ];
@@ -116,6 +117,7 @@ fn projects_with(limit: usize, progress: &Progress) -> Vec<Project> {
     for (name, depth) in [
         ("Documents", 3), ("Projects", 3), ("projects", 3), ("Code", 3), ("code", 3), ("dev", 3), ("Developer", 3),
         ("src", 3), ("workspace", 3), ("repos", 3), ("GitHub", 3), ("git", 3), ("Desktop", 2), ("Sites", 2),
+        ("source/repos", 2), ("OneDrive/Documents", 3), ("OneDrive/Desktop", 2), // Visual Studio, OneDrive (Windows)
     ] {
         let p = home.join(name);
         if p.is_dir() {
